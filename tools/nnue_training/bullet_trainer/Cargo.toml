@@ -1,0 +1,45 @@
+[package]
+name = "chessengine_nnue_trainer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "train_production_nnue"
+path = "src/main.rs"
+
+[dependencies]
+# Pin to a specific commit once you've verified it builds against this file --
+# `main` moves fast. Run `cargo doc --open` after cloning to confirm the exact
+# current signatures for ValueTrainerBuilder / SparseInputType / SavedFormat
+# before a large training run; this file was written against the real API
+# surface fetched directly from github.com/jw1912/bullet main branch on
+# 2026-07-15 (crates/bullet_lib/src/game/inputs.rs, .../outputs.rs,
+# examples/simple.rs, examples/progression/4_multi_layer.rs -- see
+# tools/nnue_training/bullet_trainer/src/main.rs's module doc for exact
+# citations). This sandbox has no Rust toolchain to compile-check this file
+# itself -- verify with `cargo check` before running.
+bullet_lib = { git = "https://github.com/jw1912/bullet" }
+# Same version bullet_lib itself depends on (crates/bullet_lib/Cargo.toml
+# pins "1.8.0" as of the above fetch) -- needed here too since main.rs
+# imports bulletformat::ChessBoard directly for the custom SparseInputType/
+# OutputBuckets impls, and bullet_lib does not appear to re-export it.
+bulletformat = "1.8.0"
+
+[features]
+# Off by default so this crate still builds on a machine with only a CPU
+# Rust toolchain (bullet still runs, just slowly -- see LocalSettings/thread
+# count in main.rs). A worker that platform/trainer/train_network.py has
+# confirmed has a real GPU builds/runs with one of:
+#   cargo run --release --features cuda -- --data ... --out ...   (NVIDIA)
+#   cargo run --release --features rocm -- --data ... --out ...   (AMD)
+# bullet_lib's own crates/gpu/Cargo.toml (fetched from github.com/jw1912/bullet,
+# see bullet-gpu's description: "Compile and execute tensor DAGs on
+# CUDA/ROCm devices") confirms these are the only two GPU compute backends
+# bullet actually implements -- there is no SYCL/Level-Zero/oneAPI/DirectML
+# backend, so an Intel GPU has no bullet training path regardless of how it's
+# detected. platform/worker/capabilities.py still detects Intel GPUs (for
+# honest capability reporting) but platform/trainer/train_network.py never
+# selects "intel" as a training backend -- it falls back to the CPU
+# reference trainer instead, with a log line saying exactly why.
+cuda = ["bullet_lib/cuda"]
+rocm = ["bullet_lib/rocm"]

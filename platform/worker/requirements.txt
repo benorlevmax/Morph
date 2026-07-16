@@ -1,0 +1,13 @@
+# platform/worker/ dependencies. Deliberately small so "download
+# this folder + pip install -r requirements.txt" is the entire setup story
+# (see platform/scripts/ and platform/docs/WORKER.md).
+requests>=2.31
+chess>=1.10
+psutil>=5.9
+# Required by platform/trainer/train_network.py (tools/nnue_pipeline's
+# HalfKP trainer/exporter) -- only actually exercised by workers that
+# opt in with --trainer-capable and get handed a TRAIN_NETWORK task, but
+# listed unconditionally so a single `pip install -r requirements.txt` is
+# still the whole setup story regardless of which task types a worker ends
+# up running.
+numpy>=1.24

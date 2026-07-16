@@ -1,0 +1,66 @@
+name: CI
+
+# Regression protection on every push/PR, not just at release time (see
+# release.yml, which only ever runs on a version-tag push or manual
+# dispatch). This closes the gap identified in the platform improvement-
+# systems audit: engine/search/eval changes previously had no automatic
+# test gate before landing on the default branch. Deliberately lean (Linux
+# build + ctest + the platform's fast pure-unit Python tests) so it stays
+# quick enough to run on every push; release.yml remains the place for the
+# full Windows+Linux matrix, worker freezing, and packaging.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch: {}
+
+jobs:
+  engine-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j"$(nproc)"
+
+      # -Wall -Wextra -Wpedantic already enabled project-wide by CMakeLists.txt
+      # on non-MSVC compilers -- this build surfaces the same warnings a
+      # contributor would see locally on Linux/macOS.
+      - name: Run engine test suite (ctest)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Perft sanity check
+        run: build/bin/chess_perft 6
+
+      - name: Bench (portable build, must not crash)
+        run: echo "bench 8" | build/bin/chess
+
+  platform-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install platform dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r platform/requirements.txt
+
+      # test_promotion.py is a fast, pure-unit regression suite for the
+      # SPRT-gated promotion logic in auto_pipeline.py (Blocker 3) --
+      # proves a weaker candidate and a statistically-insignificant sample
+      # are both correctly rejected, and that a decisively stronger
+      # candidate is promoted. No server process or network calls required.
+      # distributed/tests/test_local.py is a heavier live-server+worker
+      # integration test that needs a built --engine-bin and drives real
+      # network games; it's intentionally not run on every push here --
+      # see docs/DISTRIBUTED_DATA_GENERATION.md for how to run it manually.
+      - name: Run platform regression tests
+        run: python3 platform/server/test_promotion.py

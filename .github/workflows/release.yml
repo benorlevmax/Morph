@@ -1,0 +1,206 @@
+name: Release
+
+# Builds the engine for Windows + Linux, freezes the worker client into a
+# standalone executable for each (via PyInstaller -- no Python install
+# required to run it), and publishes everything to a GitHub Release.
+#
+# Triggers on pushing a version tag (v1.0.0, v1.2.3, ...) or manually via
+# workflow_dispatch (useful for testing the workflow itself without cutting
+# a real release -- manual runs don't publish unless you also push a tag).
+#
+# Archive naming: worker-<os>-<version>.(zip|tar.gz). Matches
+# platform/worker/updater.py's --auto-update convention
+# (worker-{target_version}.tar.gz under --update-url) -- if you change this
+# naming, update updater.py's build_archive_url() to match.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-package:
+    needs: [determine-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            engine_bin: chess.exe
+            train_bin: chess_train.exe
+            worker_bin: worker.exe
+            archive_ext: zip
+            archive_os: windows
+          - os: ubuntu-latest
+            engine_bin: chess
+            train_bin: chess_train
+            worker_bin: worker
+            archive_ext: tar.gz
+            archive_os: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # --- engine (chess + chess_train, both needed by the worker: chess
+      #     for every task type, chess_train for DATA_GENERATION/TRAIN_NETWORK) ---
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        # No explicit -G: let CMake auto-detect whatever Visual Studio
+        # version the runner actually has (hardcoding "Visual Studio 17
+        # 2022" breaks the moment GitHub's windows-latest image moves past
+        # VS2022 -- this is exactly what happened in the v1.0.0 release run).
+        run: cmake -S . -B build -A x64
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build build --config Release
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build build --config Release -j"$(nproc)"
+
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --test-dir build --output-on-failure
+
+      # --- worker: freeze into a standalone executable, no Python needed
+      #     to run it. Bundles platform/trainer/'s TRAIN_NETWORK executor
+      #     and the tools/nnue_pipeline modules elo_match.py needs
+      #     (uci_match.py) directly into the binary via --paths, since
+      #     platform/worker/{elo_match,train_network}.py cross those
+      #     directories with a runtime sys.path.insert that PyInstaller's
+      #     static analysis needs --paths to follow at build time. ---
+      - name: Install worker build deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r platform/requirements.txt
+          pip install pyinstaller
+
+      - name: Sync VERSION file with tag
+        shell: bash
+        run: echo "${{ needs.determine-version.outputs.version }}" > platform/worker/VERSION
+
+      - name: Freeze worker
+        shell: bash
+        run: |
+          pyinstaller --onefile --name worker \
+            --paths platform/worker \
+            --paths platform/trainer \
+            --paths tools/nnue_pipeline \
+            --hidden-import artifacts \
+            --hidden-import capabilities \
+            --hidden-import data_generation \
+            --hidden-import elo_match \
+            --hidden-import platform_client \
+            --hidden-import platform_config \
+            --hidden-import resource_limits \
+            --hidden-import selfplay \
+            --hidden-import updater \
+            --hidden-import train_network \
+            --hidden-import uci_match \
+            --add-data "platform/worker/VERSION${{ runner.os == 'Windows' && ';.' || ':.' }}" \
+            --distpath dist_worker \
+            platform/worker/platform_worker.py
+
+      - name: Smoke-test frozen worker
+        shell: bash
+        run: |
+          # --help must work with zero runtime Python/dependency installed
+          # on the machine that eventually downloads this -- verifies the
+          # freeze actually bundled everything the CLI parser needs.
+          ./dist_worker/${{ matrix.worker_bin }} --help
+
+      # --- package: engine binaries + frozen worker + VERSION, ready to
+      #     run with no build step and no Python install on the contributor's
+      #     machine ---
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp build/bin/Release/chess.exe dist/
+          cp build/bin/Release/chess_train.exe dist/ 2>/dev/null || true
+          cp dist_worker/worker.exe dist/
+          cp platform/worker/VERSION dist/
+          cd dist && 7z a -tzip "../worker-windows-${{ needs.determine-version.outputs.version }}.zip" .
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp build/bin/chess dist/
+          cp build/bin/chess_train dist/ 2>/dev/null || true
+          cp dist_worker/worker dist/
+          cp platform/worker/VERSION dist/
+          chmod +x dist/worker dist/chess dist/chess_train 2>/dev/null || true
+          tar -C dist -czf "worker-linux-${{ needs.determine-version.outputs.version }}.tar.gz" .
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-${{ matrix.archive_os }}
+          path: |
+            worker-windows-*.zip
+            worker-linux-*.tar.gz
+          if-no-files-found: ignore
+
+  create-release:
+    needs: [determine-version, build-and-package]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release_files
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release_files/ \;
+          ls -la release_files
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_files/*
+          generate_release_notes: true
+          body: |
+            Standalone worker releases -- no Python, CMake, or manual
+            engine build required. Each archive contains the compiled
+            engine (`chess`, `chess_train`), the worker client frozen into
+            a single executable, and its version file.
+
+            Download the archive for your OS, extract it, and run:
+
+              Windows:  worker.exe --server <url> --engine-bin chess.exe --api-key <key>
+              Linux:    ./worker --server <url> --engine-bin ./chess --api-key <key>
+
+            See platform/docs/WORKER.md for the full flag reference,
+            including `--trainer-capable` to opt in to network-training
+            tasks and `--max-cpu-percent`/`--max-memory-mb` for resource
+            limits.

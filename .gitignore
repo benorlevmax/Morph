@@ -1,0 +1,99 @@
+# ============================================================================
+# Morph — root .gitignore
+#
+# This repo's public surface is: the engine (src/, tests/, CMakeLists.txt,
+# the vendored Fathom tablebase source), the distributed compute platform
+# (platform/, distributed/), and documentation (README.md, CONTRIBUTING.md,
+# SECURITY.md, docs/, platform/docs/). Everything below is either a build
+# product, generated data/state, a large third-party binary, or an unrelated
+# side project — see PUBLICATION_PREVIEW.md for the reasoning behind each
+# block.
+#
+# platform/.gitignore and distributed/.gitignore already cover their own
+# runtime state (venvs, __pycache__, sqlite3 db files) and are left as-is;
+# this file does not duplicate those rules.
+# ============================================================================
+
+# --- Build output ---
+/build/
+/buildD/
+/out/
+CMakeCache.txt
+CMakeFiles/
+
+# --- Unrelated side project (own repo, own CLAUDE.md; not part of this
+#     publication at all — see python-engine/CLAUDE.md's own "repo split"
+#     note) ---
+/python-engine/
+
+# --- Large third-party reference/opponent engine binaries.
+#     Kept on disk at repo root today so local benchmarking scripts can
+#     reference them by absolute path (see CLAUDE.md's "repo split" note),
+#     but these are other projects' compiled releases (Stockfish, Lc0,
+#     Berserk) and their supporting archives/DLLs — not this project's
+#     source, and not ours to redistribute from this repo. ---
+/stockfish/
+/stockfish-windows-x86-64-avx2.zip
+/lc0.exe
+/lc0-v0.32.1-windows-cpu-dnnl.zip
+/berserk.exe
+/baseline.exe
+/cutechess-1.5.1-win64/
+/dnnl.dll
+/mimalloc-override.dll
+/mimalloc-redirect.dll
+/mimalloc-readme.md
+/mimalloc-LICENSE
+/DNNL-LICENSE
+/DNNL-THIRD-PARTY-PROGRAMS
+/791556.pb
+/791556.pb.gz
+
+# --- Generated training data, checkpoints, run artifacts, and other
+#     machine-produced output (not source, regenerable, in several cases
+#     multi-hundred-MB) ---
+/experiments/
+# models/ — trained .nnue/.json nets. Not required at runtime: the engine
+# defaults to classical eval, and NNUE::init() builds an in-code
+# material-baseline net automatically even if none is loaded.
+/models/
+/results/
+/snapshots/
+/training_server/datasets/
+/tools/nnue_pipeline/runs/
+/tools/nnue_pipeline/data/
+/tools/nnue_pipeline/nets/
+/tools/nnue_pipeline/checkpoints/
+/tools/nnue_training/smoke_run_evidence/
+/automation/generated/
+/automation/logs/
+/automation/state.json
+
+# --- Python runtime/build state, anywhere in the tree ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# --- Local databases (also covered inside platform/ and distributed/, kept
+#     here as a catch-all) ---
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# --- OS / editor / IDE cruft ---
+desktop.ini
+.DS_Store
+Thumbs.db
+.vs/
+.vscode/
+*.user
+
+# --- This publication-review process's own working documents. Written for
+#     local/private review (internal reasoning, "your standing approval"
+#     phrasing, etc.) -- not meant to ship as part of the public repo. ---
+/PUBLICATION_PREVIEW.md
+/DISTRIBUTED_COMPUTE_AUDIT.md
+/DISTRIBUTED_COMPUTE_COMPLETION_REPORT.md

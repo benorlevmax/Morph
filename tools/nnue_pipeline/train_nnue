@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# train_nnue - one-command NNUE pipeline (generate -> train -> export -> benchmark -> Elo test).
+# Thin wrapper so `./tools/nnue_pipeline/train_nnue [args...]` works on macOS/Linux.
+# On Windows, run the equivalent directly: python tools\nnue_pipeline\train_nnue.py [args...]
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$DIR/train_nnue.py" "$@"

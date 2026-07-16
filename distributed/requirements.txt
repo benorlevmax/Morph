@@ -1,0 +1,6 @@
+# Server + worker dependencies for distributed/.
+fastapi>=0.100
+uvicorn>=0.23
+pydantic>=2.0
+requests>=2.28
+chess>=1.10

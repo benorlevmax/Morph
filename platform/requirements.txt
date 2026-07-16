@@ -1,0 +1,11 @@
+# platform/server/ and platform/worker/ dependencies.
+# Deliberately small: FastAPI+uvicorn for the server, requests for the
+# worker's HTTP calls, python-chess for board/legality bookkeeping (same
+# stack distributed/ already uses -- see distributed/requirements.txt).
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.0
+requests>=2.31
+chess>=1.10
+psutil>=5.9
+python-multipart>=0.0.9

@@ -1,0 +1,86 @@
+# platform/docker/docker-compose.yml - Runs the community-compute server
+# (the task coordinator -- see platform/server/) AND the automated
+# improvement-loop controller (auto_pipeline.py) that closes it end to end.
+# Run from this directory:
+#
+#   cd platform/docker
+#   CHESS_PLATFORM_ADMIN_TOKEN=$(openssl rand -hex 16) docker compose up -d
+#
+# CHESS_PLATFORM_ADMIN_TOKEN MUST be set explicitly for this compose file
+# (unlike running the server alone, where an unset token just makes it
+# generate and log a random one) -- the auto-pipeline service authenticates
+# to the server's admin API with this same value, so if it's left for the
+# server to auto-generate, auto-pipeline has no way to discover it and will
+# fail to start. See platform/docs/SERVER.md for the full deployment
+# walkthrough (reverse proxy / TLS termination, backups, etc. -- this
+# compose file covers these two containers, not a production ingress
+# setup). This repository has no web frontend -- contributors interact with
+# the server exclusively through platform/worker/ (the worker client) and
+# its own HTTP API; there's nothing here for a browser to render.
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: platform/docker/Dockerfile
+    image: chess-platform-server:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      CHESS_PLATFORM_ADMIN_TOKEN: ${CHESS_PLATFORM_ADMIN_TOKEN:?set CHESS_PLATFORM_ADMIN_TOKEN -- e.g. openssl rand -hex 16}
+      # Optional legacy shared-secret worker registration. Leave unset to
+      # require per-account API keys only (recommended for a public server).
+      CHESS_PLATFORM_REGISTRATION_SECRET: ${CHESS_PLATFORM_REGISTRATION_SECRET:-}
+      CHESS_PLATFORM_RATE_LIMIT_SUBMISSIONS_PER_MIN: ${CHESS_PLATFORM_RATE_LIMIT_SUBMISSIONS_PER_MIN:-30}
+    volumes:
+      - platform-data:/data
+      # NOTE: this used to also read-only-mount ../../experiments,
+      # ../../models, ../../results, ../../automation here so the dashboard
+      # could reflect the OLDER automation/pipeline_controller.py system's
+      # output files. The dashboard (platform/server/dashboard_data.py) no
+      # longer reads those paths at all -- every dashboard figure now comes
+      # straight out of this same server's live database (workers/tasks/
+      # positions/artifacts), so those mounts were dead weight describing a
+      # data source that no longer feeds anything. If you're intentionally
+      # also running the older automation/ system, it remains fully
+      # unmodified and independent; it just isn't what this dashboard shows.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # The automated improvement-loop controller (see auto_pipeline.py's module
+  # doc): a pure HTTP client of `server`'s admin API, so it runs as its own
+  # container rather than needing direct database or filesystem access.
+  # Without this service the server still does everything workers ask of
+  # it, but no one is calling the admin endpoints in order -- this is what
+  # makes community compute flow automatically from contribution to
+  # verified stronger networks instead of requiring a human operator to
+  # drive each pipeline stage by hand. Tunable via AUTO_PIPELINE_* env vars
+  # below; see `python3 auto_pipeline.py --help` for the full set this
+  # command line only surfaces the most commonly adjusted ones.
+  auto-pipeline:
+    build:
+      context: ../..
+      dockerfile: platform/docker/Dockerfile
+    image: chess-platform-server:latest
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      CHESS_PLATFORM_ADMIN_TOKEN: ${CHESS_PLATFORM_ADMIN_TOKEN:?set CHESS_PLATFORM_ADMIN_TOKEN -- e.g. openssl rand -hex 16}
+    command:
+      - python3
+      - auto_pipeline.py
+      - --server=http://server:8000
+      - --admin-token=${CHESS_PLATFORM_ADMIN_TOKEN:?}
+      - --loop
+      - --interval-seconds=${AUTO_PIPELINE_INTERVAL_SECONDS:-300}
+      - --experiment-candidates=${AUTO_PIPELINE_EXPERIMENT_CANDIDATES:-1}
+      - --elo-games=${AUTO_PIPELINE_ELO_GAMES:-24}
+
+volumes:
+  platform-data:

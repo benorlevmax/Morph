@@ -1,0 +1,12 @@
+# Install-time / machine-specific artifacts -- never commit these.
+worker/venv/
+**/__pycache__/
+*.pyc
+worker/worker_state.json
+worker/run.sh
+worker/run.bat
+database/*.sqlite3
+database/*.sqlite3-wal
+database/*.sqlite3-shm
+database/*.sqlite3-journal
+worker/artifacts_cache/
