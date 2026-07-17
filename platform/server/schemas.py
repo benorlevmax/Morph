@@ -194,3 +194,32 @@ class ExportDatasetResponse(BaseModel):
     artifact_id: Optional[str] = None
     count: int = 0
     max_position_id: int = 0
+
+
+class PrunePositionsRequest(BaseModel):
+    """Admin-only (called by platform/server/auto_pipeline.py, opt-in via
+    --prune-after-export): delete raw `positions` rows that have already
+    been captured in an exported 'dataset' artifact, to keep the
+    positions table from growing without bound. Never deletes a position
+    that hasn't been exported into a dataset artifact yet -- see
+    database.py's delete_positions_up_to() docstring.
+
+    keep_datasets controls the safety margin: the server keeps the
+    keep_datasets most recent auto_pipeline dataset exports' worth of raw
+    positions rows completely untouched, and only deletes positions
+    covered by an OLDER export than that (never anything from the kept
+    set, and never anything not yet exported at all). keep_datasets=1
+    (the minimum) keeps just the single most recent export's rows;
+    keep_datasets=3 (the default) keeps the last 3 exports' worth of raw
+    rows around as a buffer, e.g. in case a dataset file needs to be
+    regenerated or cross-checked against the live table. Requires at
+    least keep_datasets + 1 exports to exist before anything is ever
+    pruned (there must be an older export to prune up to)."""
+    keep_datasets: int = Field(ge=1, default=3)
+
+
+class PrunePositionsResponse(BaseModel):
+    pruned: bool
+    reason: Optional[str] = None
+    deleted_count: int = 0
+    deleted_up_to_id: int = 0

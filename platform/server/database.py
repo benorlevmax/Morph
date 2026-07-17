@@ -575,6 +575,30 @@ class PlatformDatabase(DistDatabase):
         finally:
             conn.close()
 
+    def delete_positions_up_to(self, max_id):
+        """Deletes every row in `positions` with id <= max_id. Only ever
+        safe to call with a max_id that is <= the max_position_id of an
+        already-created 'dataset' artifact (see export_positions_range /
+        app.py's /admin/pipeline/export-dataset): once positions have been
+        exported into a dataset artifact file, that file is the permanent
+        record of their content (fen/eval_cp/result/etc.) -- the live rows
+        in this table become redundant disk usage, not a second copy of
+        data that's needed anywhere else. See
+        /admin/pipeline/prune-positions (app.py), which is the only caller
+        and picks max_id conservatively (an older, already-exported
+        watermark, keeping a configurable number of the most recent
+        datasets' raw rows as a safety margin -- never a position that
+        hasn't been exported into a dataset artifact yet).
+
+        Returns the number of rows actually deleted."""
+        conn = self._conn()
+        try:
+            cur = conn.execute('DELETE FROM positions WHERE id <= ?', (max_id,))
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
     def count_tasks_by_type_status(self, task_type, status='pending'):
         conn = self._conn()
         try:

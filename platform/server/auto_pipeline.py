@@ -379,4 +379,89 @@ def parse_args():
     ap.add_argument('--elo-match-depth', type=int, default=5)
 
     # SPRT-gated promotion (Blocker 3): a candidate is promoted only once its
-    # aggregated match_results reach a statistic
+    # aggregated match_results reach a statistically decisive verdict (see
+    # _sprt_verdict/maybe_promote_candidates above) -- never on a raw Elo
+    # point estimate alone. elo0/elo1 define the non-regression band being
+    # tested (H0: candidate is no better than elo0 Elo stronger than
+    # baseline; H1: candidate is at least elo1 Elo stronger); alpha/beta are
+    # the SPRT's false-accept/false-reject rate bounds. The defaults here
+    # (elo0=0, elo1=5) mirror what real engine-testing frameworks like
+    # fishtest use for a deliberately narrow non-regression test.
+    ap.add_argument('--sprt-elo0', type=float, default=0.0,
+                     help='SPRT H0 Elo bound (candidate assumed no stronger than this)')
+    ap.add_argument('--sprt-elo1', type=float, default=5.0,
+                     help='SPRT H1 Elo bound (candidate must reach at least this to be promoted)')
+    ap.add_argument('--sprt-alpha', type=float, default=0.05,
+                     help='SPRT false-accept rate (probability of promoting a candidate that '
+                          'is not actually stronger)')
+    ap.add_argument('--sprt-beta', type=float, default=0.05,
+                     help='SPRT false-reject rate (probability of rejecting a candidate that '
+                          'actually is stronger)')
+    ap.add_argument('--max-elo-games', type=int, default=400,
+                     help='stop queueing more ELO_MATCH games for a candidate once this many '
+                          'have been played, even if the SPRT verdict is still \'continue\' -- '
+                          'an honest \'still too close to call\' outcome rather than an '
+                          'unbounded compute sink')
+
+    # Disk-space management (positions accumulate forever otherwise on a
+    # long-running deployment) -- opt-in and conservative by default: never
+    # deletes anything the server hasn't already permanently exported into a
+    # dataset artifact file (see maybe_prune_positions below).
+    ap.add_argument('--prune-after-export', action='store_true',
+                     help='after a successful dataset export (Stage 1), also prune raw '
+                          '`positions` rows already covered by older exports (see '
+                          'maybe_prune_positions / POST /admin/pipeline/prune-positions). '
+                          'Off by default -- a deployment with plenty of disk headroom can '
+                          'simply never pass this flag and keep every raw position forever.')
+    ap.add_argument('--keep-datasets', type=int, default=3,
+                     help='when --prune-after-export is set, how many of the most recent '
+                          'auto-exported datasets\' worth of raw positions to keep around as '
+                          'a buffer before pruning anything older (passed straight through to '
+                          'POST /admin/pipeline/prune-positions\' keep_datasets)')
+
+    return ap.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 (opt-in): prune raw positions already captured in older exported
+# dataset artifacts, so a long-running deployment doesn't fill its disk with
+# rows that only ever mattered as an intermediate step toward a dataset
+# file that already exists permanently as an artifact. See database.py's
+# delete_positions_up_to() docstring and app.py's /admin/pipeline/
+# prune-positions for why this is safe and how the keep_datasets buffer
+# works. Only runs when --prune-after-export was passed -- most deployments
+# with adequate disk simply never enable this.
+# ---------------------------------------------------------------------------
+def maybe_prune_positions(client, args):
+    if not args.prune_after_export:
+        return
+    resp = client.post('/admin/pipeline/prune-positions', {'keep_datasets': args.keep_datasets})
+    if not resp['pruned']:
+        log(f"prune: nothing pruned ({resp.get('reason')})")
+        return
+    log(f"prune: deleted {resp['deleted_count']} position row(s) with id <= "
+        f"{resp['deleted_up_to_id']} (kept the {args.keep_datasets} most recent exports' "
+        f"worth of raw rows as a buffer)")
+
+
+def main():
+    args = parse_args()
+    client = AdminClient(args.server, args.admin_token)
+
+    if args.loop:
+        cycles = 0
+        while True:
+            run_cycle(client, args)
+            maybe_prune_positions(client, args)
+            cycles += 1
+            if args.max_cycles and cycles >= args.max_cycles:
+                log(f'reached --max-cycles={args.max_cycles} -- exiting')
+                break
+            time.sleep(args.interval_seconds)
+    else:
+        run_cycle(client, args)
+        maybe_prune_positions(client, args)
+
+
+if __name__ == '__main__':
+    main()

@@ -25,6 +25,7 @@ Database), plus what a public deployment needs on top:
                 GET /stats, GET /workers, GET /version
     Admin:      POST /admin/tasks, GET /admin/tasks, POST /admin/tasks/typed,
                 POST /admin/artifacts, POST /admin/pipeline/export-dataset,
+                POST /admin/pipeline/prune-positions,
                 POST /admin/artifacts/{id}/accept, GET /admin/artifacts/{id}/match-results,
                 POST /admin/workers/{id}/disable, POST /admin/workers/{id}/enable
 
@@ -61,6 +62,7 @@ from schemas import (
     WorkerCapabilities, TypedTaskResponse, CreateTypedTaskRequest, CreateTypedTaskResponse,
     ArtifactResponse, RegisterArtifactRequest, MatchResultRequest, MatchResultResponse,
     ArtifactUploadResponse, ExportDatasetRequest, ExportDatasetResponse,
+    PrunePositionsRequest, PrunePositionsResponse,
 )
 from validation import validate_position, content_hash  # distributed/server/validation.py
 
@@ -653,6 +655,60 @@ def export_dataset(req: ExportDatasetRequest, _=Depends(require_admin)):
 
     return ExportDatasetResponse(created=True, artifact_id=artifact_id,
                                   count=len(rows), max_position_id=max_id)
+
+
+@app.post('/admin/pipeline/prune-positions', response_model=PrunePositionsResponse)
+def prune_positions(req: PrunePositionsRequest, _=Depends(require_admin)):
+    """Called by the automated improvement-loop controller
+    (platform/server/auto_pipeline.py), opt-in via --prune-after-export --
+    disk-space management for long-running deployments (raw positions
+    accumulate forever otherwise; see database.py's delete_positions_up_to
+    docstring for why this is safe once a position has been exported).
+
+    Walks the auto_pipeline-sourced 'dataset' artifacts and keeps the
+    keep_datasets most recent exports' worth of raw rows untouched, deleting
+    everything covered by any OLDER export. Never deletes anything newer
+    than an actual exported watermark -- if there isn't at least one export
+    older than the kept set yet (i.e. fewer than keep_datasets + 1
+    auto-exported datasets exist), does nothing and reports pruned=False,
+    since there's no old-enough watermark to safely prune up to.
+
+    Ranks exports by max_position_id (numeric, descending) rather than by
+    list_artifacts()'s created_at ordering: created_at (database.py's
+    now_iso()) only has one-second resolution, so two exports triggered in
+    quick succession (a realistic scenario -- e.g. a catch-up cycle, or a
+    short --interval-seconds) can tie and make created_at-based "newest"
+    ambiguous. max_position_id is strictly increasing by construction
+    (export_dataset always exports positions newer than the prior
+    watermark), so it's an unambiguous, race-free ordering for this
+    specific purpose."""
+    watermarks = []
+    for art in db.list_artifacts(kind='dataset'):
+        meta = art.get('metadata') or {}
+        if meta.get('source') == 'auto_pipeline':
+            watermarks.append(int(meta.get('max_position_id', 0)))
+    watermarks.sort(reverse=True)
+
+    if len(watermarks) <= req.keep_datasets:
+        return PrunePositionsResponse(
+            pruned=False,
+            reason=f'only {len(watermarks)} auto-exported dataset(s) so far, '
+                   f'need at least {req.keep_datasets + 1} (keep_datasets={req.keep_datasets} '
+                   f'plus one older one to prune up to) before pruning anything')
+
+    # watermarks is newest-first (list_artifacts orders by created_at DESC);
+    # index [keep_datasets] is the watermark of the newest export NOT in the
+    # kept set -- everything at or before it has already been captured in
+    # that export or an even older one, and is safe to drop. The
+    # keep_datasets most recent exports (indices 0..keep_datasets-1) keep
+    # their raw rows untouched.
+    prune_up_to = watermarks[req.keep_datasets]
+    if prune_up_to <= 0:
+        return PrunePositionsResponse(pruned=False, reason='nothing to prune yet')
+
+    deleted = db.delete_positions_up_to(prune_up_to)
+    return PrunePositionsResponse(pruned=True, deleted_count=deleted,
+                                   deleted_up_to_id=prune_up_to)
 
 
 @app.post('/admin/artifacts/{artifact_id}/accept')
