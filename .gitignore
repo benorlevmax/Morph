@@ -21,14 +21,13 @@
 CMakeCache.txt
 CMakeFiles/
 
-# --- Unrelated side project (own repo, own CLAUDE.md; not part of this
-#     publication at all — see python-engine/CLAUDE.md's own "repo split"
-#     note) ---
+# --- Unrelated side project (own repo, own project notes; not part of
+#     this publication at all — see python-engine's own "repo split" note) ---
 /python-engine/
 
 # --- Large third-party reference/opponent engine binaries.
 #     Kept on disk at repo root today so local benchmarking scripts can
-#     reference them by absolute path (see CLAUDE.md's "repo split" note),
+#     reference them by absolute path (see DEVELOPMENT.md's "repo split" note),
 #     but these are other projects' compiled releases (Stockfish, Lc0,
 #     Berserk) and their supporting archives/DLLs — not this project's
 #     source, and not ours to redistribute from this repo. ---
@@ -97,3 +96,6 @@ Thumbs.db
 /PUBLICATION_PREVIEW.md
 /DISTRIBUTED_COMPUTE_AUDIT.md
 /DISTRIBUTED_COMPUTE_COMPLETION_REPORT.md
+
+# --- Local-only dev notes alias (mirrors DEVELOPMENT.md); never published. ---
+/CLAUDE.md

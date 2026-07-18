@@ -10,7 +10,7 @@ and stops at the first stage that fails (a broken checkpoint should not
 silently produce a "tested" .nnue).
 
 All engine binaries used (chess_train, chess) must already be built -- see
-CLAUDE.md's Build section. This script never invokes the build system and
+DEVELOPMENT.md's Build section. This script never invokes the build system and
 never touches src/.
 
 Usage (defaults are deliberately small so a first run finishes in minutes,

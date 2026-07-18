@@ -13,7 +13,7 @@ table.
 ## Note: repo split
 This repo used to also contain a separate Python AlphaZero-style research
 pipeline (self-play + MCTS + PyTorch net). That code, its checkpoints, and its
-training data now live in `python-engine/` (own `CLAUDE.md` there). The two
+training data now live in `python-engine/` (own project notes there). The two
 projects are independent — no code or model sharing between them. Shared
 reference/opponent binaries (`stockfish/`, `lc0.exe`, `berserk.exe`,
 `baseline.exe`, `cutechess-1.5.1-win64/`, the `791556.pb*` Lc0 net) stay here

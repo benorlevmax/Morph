@@ -4,7 +4,7 @@ scripts (chess_train, chess, chess_match), and small subprocess helpers shared
 by generate.py / test.py.
 
 Does not build anything and does not touch engine source -- it only looks for
-binaries that must already exist (see CLAUDE.md's "Build" section: `cmake -S .
+binaries that must already exist (see DEVELOPMENT.md's "Build" section: `cmake -S .
 -B build ...` then `cmake --build build --config Release`).
 """
 import os
@@ -14,7 +14,7 @@ import sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Candidate build output directories, in priority order. Windows/MSVC layout
-# (per CLAUDE.md) puts binaries in build/bin/Release/*.exe; a Ninja/Unix
+# (per DEVELOPMENT.md) puts binaries in build/bin/Release/*.exe; a Ninja/Unix
 # config puts them directly in build/bin/*.
 _CANDIDATE_DIRS = [
     os.path.join(REPO_ROOT, 'build', 'bin', 'Release'),
@@ -44,7 +44,7 @@ def find_binary(name, bin_dir=None):
                 return p
     raise FileNotFoundError(
         f"could not find '{name}' binary. Tried:\n  " + "\n  ".join(tried) +
-        f"\n\nBuild the engine first (see CLAUDE.md):\n"
+        f"\n\nBuild the engine first (see DEVELOPMENT.md):\n"
         f"  cmake -S . -B build -G \"Visual Studio 17 2022\" -A x64\n"
         f"  cmake --build build --config Release\n"
         f"Or pass --bin-dir to point at your build's bin/ directory.")
