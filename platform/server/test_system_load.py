@@ -167,5 +167,59 @@ class CapacityEnforcementTests(unittest.TestCase):
         self.assertEqual(self._register('worker-c').status_code, 503)
 
 
+class PublicCapacityEndpointTests(unittest.TestCase):
+    """GET /capacity -- the header-less, unauthenticated sibling of
+    /admin/system-load (see app.py's docstring on it: built for external
+    monitoring environments that can't send a custom X-Admin-Token
+    header, discovered when the scheduled-task monitoring check for this
+    exact feature couldn't reach the admin endpoint for that reason).
+    Must need NO Authorization/X-Admin-Token header at all, and must NOT
+    include memory/disk/load_average (those stay admin-only)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app_module.app)
+
+    def setUp(self):
+        conn = app_module.db._conn()
+        try:
+            conn.execute('DELETE FROM workers')
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _register(self, hostname):
+        return self.client.post('/register', json={
+            'hostname': hostname, 'engine_version': '1.0', 'threads': 1,
+            'registration_secret': 'test-secret',
+        })
+
+    def test_no_auth_required(self):
+        r = self.client.get('/capacity')
+        self.assertEqual(r.status_code, 200)
+
+    def test_shape_excludes_sensitive_infra_fields(self):
+        r = self.client.get('/capacity')
+        body = r.json()
+        self.assertEqual(set(body.keys()),
+                         {'connected_workers', 'max_connected_workers',
+                          'at_worker_capacity', 'pending_tasks'})
+        for leaked_field in ('memory', 'disk', 'load_average', 'cpu_count'):
+            self.assertNotIn(leaked_field, body)
+
+    def test_reflects_registrations_same_as_admin_endpoint(self):
+        self._register('worker-a')
+        public = self.client.get('/capacity').json()
+        admin = self.client.get('/admin/system-load',
+                                headers={'X-Admin-Token': 'test-admin-token'}).json()
+        self.assertEqual(public['connected_workers'], admin['connected_workers'])
+        self.assertEqual(public['at_worker_capacity'], admin['at_worker_capacity'])
+
+    def test_at_capacity_true_once_full(self):
+        self._register('worker-a')
+        self._register('worker-b')
+        self.assertTrue(self.client.get('/capacity').json()['at_worker_capacity'])
+
+
 if __name__ == '__main__':
     unittest.main()

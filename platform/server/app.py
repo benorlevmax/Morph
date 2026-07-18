@@ -22,7 +22,7 @@ Database), plus what a public deployment needs on top:
                 GET /artifacts, GET /artifacts/{id}, GET /artifacts/{id}/download,
                 GET /artifacts/strongest-network, POST /artifacts/upload
     Community:  GET /leaderboard, GET /dashboard/summary, GET /dashboard/elo-series,
-                GET /stats, GET /workers, GET /version
+                GET /stats, GET /workers, GET /version, GET /capacity
     Admin:      POST /admin/tasks, GET /admin/tasks, POST /admin/tasks/typed,
                 POST /admin/artifacts, POST /admin/pipeline/export-dataset,
                 POST /admin/pipeline/prune-positions, GET /admin/system-load,
@@ -530,6 +530,30 @@ def upload_artifact(kind: str = Form(...), task_id: str = Form(None),
 @app.get('/stats')
 def stats():
     return db.get_stats()
+
+
+@app.get('/capacity')
+def capacity():
+    """Public, unauthenticated subset of GET /admin/system-load -- exists
+    specifically for external monitoring tools that can't send a custom
+    X-Admin-Token header (e.g. a sandboxed scheduled-check environment
+    with no header support in its fetch tool) or reach the server except
+    over a plain HTTP GET. Deliberately excludes load average/memory/disk
+    (still admin-only, see /admin/system-load) -- those are more
+    revealing of exact infra headroom than is worth exposing publicly;
+    worker-capacity status and queue depth are the two signals worth
+    that tradeoff, since they're also the two a would-be volunteer might
+    reasonably want to see before trying to join (no point registering
+    if the server is already full)."""
+    connected = db.count_connected_workers()
+    task_counts = db.get_task_counts_by_type()
+    pending_tasks = sum(counts.get('pending', 0) for counts in task_counts.values())
+    return {
+        'connected_workers': connected,
+        'max_connected_workers': settings.max_connected_workers,
+        'at_worker_capacity': connected >= settings.max_connected_workers,
+        'pending_tasks': pending_tasks,
+    }
 
 
 @app.get('/workers')

@@ -97,7 +97,8 @@ volunteer worker machines.
 `POST /artifacts/upload` (multipart — datasets/checkpoints/candidate networks)
 
 **Community (public, no auth):** `GET /stats`, `/workers`, `/leaderboard`,
-`/dashboard/summary`, `/dashboard/elo-series`, `/version`, `/health`
+`/dashboard/summary`, `/dashboard/elo-series`, `/version`, `/health`,
+`/capacity` (header-less subset of `/admin/system-load` -- see below)
 
 **Admin (`X-Admin-Token` header):** `POST /admin/tasks` (legacy bulk
 `SELF_PLAY`), `POST /admin/tasks/typed` (any task type),
@@ -131,6 +132,17 @@ the artifacts directory's filesystem. It's meant to be polled externally
 -- e.g. a cron job, or a Cowork scheduled task -- rather than watched
 live; the response itself doesn't track history, so an external poller
 that wants a trend needs to keep its own.
+
+`GET /capacity` is a public, unauthenticated sibling exposing just
+`connected_workers`/`max_connected_workers`/`at_worker_capacity`/
+`pending_tasks` -- no memory/disk/load (those stay admin-only, since
+they're more revealing of exact infra headroom than is worth exposing to
+anyone on the internet). This exists because some external monitoring
+environments can't send a custom `X-Admin-Token` header at all (a
+sandboxed scheduled-check tool with a header-less fetch primitive is
+exactly the case that prompted adding it) -- if your monitoring setup
+*can* send custom headers, prefer `/admin/system-load` for the fuller
+picture.
 
 ```bash
 curl -s $SERVER/admin/system-load -H "X-Admin-Token: $TOKEN"
