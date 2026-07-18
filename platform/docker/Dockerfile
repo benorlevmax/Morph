@@ -30,6 +30,25 @@ COPY distributed/server/ /app/distributed/server/
 COPY distributed/database/ /app/distributed/database/
 COPY platform/ /app/platform/
 
+# One deliberate, narrow exception to "no tools/" above:
+# platform/server/auto_pipeline.py imports uci_match.py (tools/nnue_pipeline/)
+# for Elo/SPRT math -- both a human-readable log line (elo_estimate) and,
+# critically, the actual promotion decision itself (sprt(), used by
+# maybe_promote_candidates()/_sprt_verdict() to decide whether a candidate
+# network gets accepted). Without this file present, auto_pipeline.py
+# crash-loops the instant it runs (ModuleNotFoundError: uci_match) and
+# candidate promotion silently never happens -- a real bug found via a live
+# crash-loop on the deployed server, not caught by tests because the
+# in-process test suite runs with the full repo on sys.path and never sees
+# what actually ships in the image. uci_match.py only imports stdlib
+# (math/subprocess/time -- see its own module docstring), so this adds zero
+# new pip dependencies; copying just this one file, not all of
+# tools/nnue_pipeline/, keeps the "no engine/training toolchain in this
+# image" property intact for everything else in that directory (train.py,
+# nnue_format.py, etc. pull in torch/numpy this image deliberately doesn't
+# install).
+COPY tools/nnue_pipeline/uci_match.py /app/tools/nnue_pipeline/uci_match.py
+
 RUN pip install --no-cache-dir -r /app/platform/requirements.txt
 
 # Default DB path lives on a mounted volume so it survives container
