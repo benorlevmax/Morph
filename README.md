@@ -50,24 +50,38 @@ the result. You don't need to understand chess programming to help.
 
 1. **Download the same release archive** from step 2 above — it already
    includes the worker alongside the engine.
-2. **Get a server address and a key.** The worker needs to know which
-   server to talk to, plus either an API key or a shared password (an
-   operator gives you one of these). This is only needed to contribute
-   compute — if you just want to play, you can skip this whole section.
-   If no one has given you a server to join, you don't have one to
-   connect to yet.
+2. **Get an API key.** The official community server is at
+   `http://64.181.243.154:8000` — sign up for a free account and get your
+   own key in three commands (replace `yourname`/`yourpassword`):
+
+   ```bash
+   curl -X POST http://64.181.243.154:8000/accounts/register \
+     -H "Content-Type: application/json" \
+     -d '{"username": "yourname", "password": "yourpassword"}'
+
+   SESSION=$(curl -s -X POST http://64.181.243.154:8000/accounts/login \
+     -H "Content-Type: application/json" \
+     -d '{"username": "yourname", "password": "yourpassword"}' \
+     | python3 -c "import sys,json; print(json.load(sys.stdin)['session_token'])")
+
+   curl -X POST http://64.181.243.154:8000/accounts/api-key/regenerate \
+     -H "Authorization: Bearer $SESSION"
+   ```
+
+   The last command prints your API key (`cek_...`) once — save it, it
+   can't be shown again (only regenerated, which invalidates the old one).
+   This is only needed to contribute compute — if you just want to play,
+   you can skip this whole section. Note the server is plain HTTP for now
+   (no TLS yet), so don't reuse a password you care about elsewhere.
 3. **Run the worker:**
 
    ```bash
    # Linux
-   ./worker --server <server address> --engine-bin ./chess --api-key <your key>
+   ./worker --server http://64.181.243.154:8000 --engine-bin ./chess --api-key <your key>
 
    # Windows
-   worker.exe --server <server address> --engine-bin chess.exe --api-key <your key>
+   worker.exe --server http://64.181.243.154:8000 --engine-bin chess.exe --api-key <your key>
    ```
-
-   (Use `--registration-secret <secret>` instead of `--api-key` if that's
-   what you were given.)
 4. **Leave it running.** It reports what your computer can do, requests
    real work, and keeps going in the background until you close it.
 

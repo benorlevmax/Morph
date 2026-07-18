@@ -13,11 +13,37 @@ executes real work — no simulated tasks, no placeholder compute.
 - Python 3.9+ and `pip install -r platform/requirements.txt`, unless
   you're using a packaged release that bundles everything.
 
+## Getting an API key
+
+The official community server is `http://64.181.243.154:8000` (plain HTTP
+for now, no TLS yet -- don't reuse a password you care about elsewhere).
+Sign up and mint a key in three calls:
+
+```bash
+curl -X POST http://64.181.243.154:8000/accounts/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "yourname", "password": "yourpassword"}'
+
+SESSION=$(curl -s -X POST http://64.181.243.154:8000/accounts/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "yourname", "password": "yourpassword"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['session_token'])")
+
+curl -X POST http://64.181.243.154:8000/accounts/api-key/regenerate \
+  -H "Authorization: Bearer $SESSION"
+```
+
+The last call prints your key (`cek_...`) once -- it can't be retrieved
+again, only regenerated (which invalidates the old one). See
+[SERVER.md](SERVER.md) if you're running your own server instead of
+joining the official one -- `CHESS_PLATFORM_REGISTRATION_SECRET` is a
+simpler shared-secret alternative some private deployments use instead.
+
 ## Running
 
 ```bash
 python3 platform_worker.py \
-  --server https://compute.example.org \
+  --server http://64.181.243.154:8000 \
   --engine-bin /path/to/chess \
   --api-key cek_...                      # or --registration-secret <secret>
 ```
