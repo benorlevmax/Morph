@@ -75,9 +75,20 @@ class Settings:
         # TRAIN_NETWORK/DATA_GENERATION artifact uploads -- the dashboard
         # and every other live figure this server reports come from the
         # database itself (see dashboard_data.py), never from files on disk.
+        # NOTE: this must derive from self.db_path (already resolved above,
+        # honoring CHESS_PLATFORM_DB_PATH), not the module-level
+        # DEFAULT_DB_PATH constant -- using the constant here meant the
+        # artifacts dir silently ignored CHESS_PLATFORM_DB_PATH and always
+        # fell back to a path next to the *source tree's* default database
+        # location. In the Docker image that's /app/platform/database/,
+        # which is root-owned and read-only to the non-root `platform`
+        # user the container actually runs as -- every deployment setting
+        # CHESS_PLATFORM_DB_PATH (which includes the shipped Dockerfile,
+        # pointing it at the writable /data volume) hit a PermissionError
+        # on startup as soon as it tried to create this directory.
         self.artifacts_dir = os.environ.get(
             'CHESS_PLATFORM_ARTIFACTS_DIR',
-            os.path.join(os.path.dirname(DEFAULT_DB_PATH), 'artifacts'))
+            os.path.join(os.path.dirname(self.db_path), 'artifacts'))
         os.makedirs(self.artifacts_dir, exist_ok=True)
 
         # Hard cap on a single artifact upload (candidate NNUE nets and
