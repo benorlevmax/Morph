@@ -419,6 +419,23 @@ def parse_args():
                           'a buffer before pruning anything older (passed straight through to '
                           'POST /admin/pipeline/prune-positions\' keep_datasets)')
 
+    # Push-notification alerting (opt-in): rather than have an outside
+    # process poll this server (which turned out to be unreliable -- some
+    # monitoring environments can't reach an arbitrary server IP/port at
+    # all, a network restriction on the monitor's side), this loop checks
+    # its own server's /admin/system-load each cycle and, if enabled,
+    # pushes a notification out via ntfy.sh (see maybe_alert_on_capacity /
+    # evaluate_capacity_alert below) when something needs attention.
+    ap.add_argument('--ntfy-topic', default='',
+                     help='ntfy.sh topic to push capacity/health alerts to (see '
+                          'https://ntfy.sh -- subscribe at ntfy.sh/<topic> in a browser '
+                          'or the app). Off by default -- leave unset to disable alerting '
+                          'entirely.')
+    ap.add_argument('--ntfy-reminder-cycles', type=int, default=12,
+                     help='while a problem persists, send a reminder notification every '
+                          'this many cycles instead of only once (default 12 -- e.g. '
+                          'roughly hourly at a 5-minute --interval-seconds)')
+
     return ap.parse_args()
 
 
@@ -444,15 +461,144 @@ def maybe_prune_positions(client, args):
         f"worth of raw rows as a buffer)")
 
 
+
+# ---------------------------------------------------------------------------
+# Stage 5 (opt-in): push notification when the server itself is under
+# strain, via ntfy.sh (https://ntfy.sh -- free, no account, a POST to
+# ntfy.sh/<topic> delivers to anyone subscribed to that topic in the app
+# or a browser tab). This exists because polling the server FROM outside
+# (a scheduled external monitor) turned out not to work reliably in
+# practice -- some monitoring environments can't reach an arbitrary
+# server IP/port at all (network policy on the *monitor's* side, nothing
+# wrong with this server). Pushing OUT from here instead sidesteps that
+# entirely: this process already runs on the same box as the server with
+# full outbound internet access, so there's no inbound reachability
+# question to begin with.
+#
+# evaluate_capacity_alert() is a pure function (snapshot dict in, message
+# string or None out) so the threshold logic is unit-testable without a
+# real server or network call -- see test_capacity_alert.py.
+# ---------------------------------------------------------------------------
+def evaluate_capacity_alert(snapshot):
+    # snapshot is GET /admin/system-load's response shape. Returns a
+    # human-readable alert message describing every crossed threshold
+    # (joined, not one call per condition), or None if nothing is wrong.
+    # Mirrors the thresholds a from-outside monitor would use, but this
+    # one actually has memory/disk/load_average available since it's
+    # calling the real admin endpoint locally, not the header-less public
+    # /capacity subset an external caller is limited to.
+    problems = []
+
+    if snapshot.get('at_worker_capacity'):
+        problems.append(
+            f"at worker capacity ({snapshot['connected_workers']}/"
+            f"{snapshot['max_connected_workers']} connected) -- new volunteers are being "
+            f"turned away")
+
+    pending = snapshot.get('pending_tasks', 0)
+    if pending >= 100:
+        problems.append(f"task queue backlog: {pending} pending")
+
+    mem = snapshot.get('memory') or {}
+    if mem.get('used_percent') is not None and mem['used_percent'] >= 85:
+        problems.append(f"memory at {mem['used_percent']}%")
+
+    disk = snapshot.get('disk') or {}
+    if disk.get('used_percent') is not None and disk['used_percent'] >= 85:
+        problems.append(f"disk at {disk['used_percent']}%")
+
+    load = snapshot.get('load_average') or {}
+    cpu_count = snapshot.get('cpu_count')
+    if load.get('1min') is not None and cpu_count:
+        if load['1min'] >= cpu_count * 1.2:
+            problems.append(f"load average {load['1min']} ({cpu_count} CPUs)")
+
+    if not problems:
+        return None
+    return "Morph server: " + "; ".join(problems)
+
+
+def send_ntfy_notification(topic, message, priority='default', tags=None):
+    # POSTs to ntfy.sh -- see the Stage 5 comment above. Network errors
+    # here are logged and swallowed, never raised: a failed notification
+    # must never crash the improvement loop itself.
+    headers = {'Title': 'Morph server', 'Priority': priority}
+    if tags:
+        headers['Tags'] = tags
+    try:
+        resp = requests.post(f'https://ntfy.sh/{topic}', data=message.encode('utf-8'),
+                             headers=headers, timeout=15)
+        if resp.status_code >= 400:
+            log(f'ntfy: HTTP {resp.status_code} sending notification: {resp.text}')
+    except requests.RequestException as e:
+        log(f'ntfy: failed to send notification: {e}')
+
+
+class CapacityAlertState:
+    # Tracks alert state across loop iterations (this is a long-running
+    # process, so plain instance state is enough -- no need to persist
+    # anything to disk). Behavior: notify immediately when a problem
+    # first appears, send a reminder every reminder_cycles while it
+    # persists (so a real, ongoing problem doesn't go silent after the
+    # first ping), and send one 'resolved' notification when it clears.
+
+    def __init__(self, reminder_cycles):
+        self.reminder_cycles = reminder_cycles
+        self.was_alerting = False
+        self.cycles_since_notify = 0
+
+    def observe(self, message):
+        # message is evaluate_capacity_alert()'s return value (str or
+        # None). Returns the notification text to actually send this
+        # cycle, or None to send nothing.
+        if message is not None:
+            if not self.was_alerting:
+                # A problem just appeared -- always notify right away.
+                self.was_alerting = True
+                self.cycles_since_notify = 0
+                return message
+            self.cycles_since_notify += 1
+            if self.cycles_since_notify >= self.reminder_cycles:
+                # Still going after reminder_cycles more cycles -- ping again
+                # so an ongoing problem doesn't go silent after the first alert.
+                self.cycles_since_notify = 0
+                return message
+            return None
+
+        if self.was_alerting:
+            self.was_alerting = False
+            self.cycles_since_notify = 0
+            return "Morph server: back to normal -- all thresholds clear now."
+
+        return None
+
+
+def maybe_alert_on_capacity(client, args, alert_state):
+    if not args.ntfy_topic:
+        return
+    try:
+        snapshot = client.get('/admin/system-load')
+    except ApiError as e:
+        log(f'capacity check: could not reach /admin/system-load: {e}')
+        return
+    message = evaluate_capacity_alert(snapshot)
+    to_send = alert_state.observe(message)
+    if to_send:
+        tags = 'warning' if message is not None else 'white_check_mark'
+        log(f'capacity alert: {to_send}')
+        send_ntfy_notification(args.ntfy_topic, to_send, tags=tags)
+
 def main():
     args = parse_args()
     client = AdminClient(args.server, args.admin_token)
+    alert_state = CapacityAlertState(args.ntfy_reminder_cycles)
 
     if args.loop:
         cycles = 0
         while True:
             run_cycle(client, args)
             maybe_prune_positions(client, args)
+            maybe_alert_on_capacity(client, args, alert_state)
             cycles += 1
             if args.max_cycles and cycles >= args.max_cycles:
                 log(f'reached --max-cycles={args.max_cycles} -- exiting')
@@ -461,6 +607,7 @@ def main():
     else:
         run_cycle(client, args)
         maybe_prune_positions(client, args)
+        maybe_alert_on_capacity(client, args, alert_state)
 
 
 if __name__ == '__main__':

@@ -158,6 +158,38 @@ curl -s $SERVER/admin/system-load -H "X-Admin-Token: $TOKEN"
 }
 ```
 
+**Getting pinged instead of polling.** Having something *outside* the
+server poll `/admin/system-load` or `/capacity` on a schedule works, but
+depends on that outside thing actually being able to reach the server's
+address -- some sandboxed monitoring/scheduled-check environments turned
+out not to be able to reach an arbitrary IP:port at all, which is a
+restriction on the monitor's side, not the server's. `auto_pipeline.py`
+(the same container already looping every `--interval-seconds` to drive
+the improvement pipeline -- see 'Creating tasks' below) sidesteps this by
+checking its own server's `/admin/system-load` each cycle and, when
+something crosses a threshold, pushing a notification *out* via
+[ntfy.sh](https://ntfy.sh) (free, no account -- POST a message to
+`ntfy.sh/<topic>` and anyone subscribed to that topic, via a browser tab
+at that URL or the ntfy mobile app, gets it instantly).
+
+Enabled by default in `docker-compose.yml` with a baked-in random topic
+(`AUTO_PIPELINE_NTFY_TOPIC`, defaulting to
+`morph-alerts-fef67201d1fa18b07d679826b21ea05d`) so it works with no extra
+terminal setup -- just open
+`https://ntfy.sh/morph-alerts-fef67201d1fa18b07d679826b21ea05d` in a
+browser tab (or the ntfy app) to subscribe. Set your own
+`AUTO_PIPELINE_NTFY_TOPIC` if you'd rather use a private topic (topic
+names are unauthenticated/obscurity-based, so a long random one is what
+keeps it effectively private), or pass `--ntfy-topic=` (empty) to
+`auto_pipeline.py` directly to disable alerting.
+
+It alerts on the same signals `GET /admin/system-load` exposes -- at
+worker capacity, a pending-task backlog of 100+, memory or disk at 85%+,
+or 1-minute load average at 1.2x the CPU count -- and won't go silent on
+an ongoing problem: it notifies immediately when a problem first appears,
+then again every `--ntfy-reminder-cycles` cycles (default `12`) while it
+persists, plus a one-time "back to normal" notice once it clears.
+
 ## Creating tasks
 
 If `auto-pipeline` (see the Docker section above, or run

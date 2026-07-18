@@ -96,6 +96,18 @@ services:
       - --interval-seconds=${AUTO_PIPELINE_INTERVAL_SECONDS:-300}
       - --experiment-candidates=${AUTO_PIPELINE_EXPERIMENT_CANDIDATES:-1}
       - --elo-games=${AUTO_PIPELINE_ELO_GAMES:-24}
+      # Push-notification alerting (see auto_pipeline.py's Stage 5 comment):
+      # this same container checks its own server's capacity/health each
+      # cycle and, when something needs attention, pushes a notification
+      # via ntfy.sh (https://ntfy.sh -- free, no account; subscribe by
+      # opening ntfy.sh/<topic> in a browser tab or the app). The topic
+      # below is a baked-in default (a random, unguessable ID -- topic
+      # names are unauthenticated/obscurity-based) so alerting works out of
+      # the box with no extra terminal setup; override with
+      # AUTO_PIPELINE_NTFY_TOPIC if you want your own private topic, or set
+      # it to an empty string to disable alerting entirely.
+      - --ntfy-topic=${AUTO_PIPELINE_NTFY_TOPIC:-morph-alerts-fef67201d1fa18b07d679826b21ea05d}
+      - --ntfy-reminder-cycles=${AUTO_PIPELINE_NTFY_REMINDER_CYCLES:-12}
 
 volumes:
   platform-data:
