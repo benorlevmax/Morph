@@ -133,8 +133,24 @@ automatically.
 
 ## Standalone releases
 
-A [Release](../../../releases) bundles the compiled engine binary,
-`platform/worker/`, `platform/trainer/`, and the pieces of
-`tools/nnue_pipeline/` the `ELO_MATCH` executor needs — a contributor
-should not need to clone this repo or install a C++ toolchain. See
-`.github
+A [Release](../../../releases) bundles everything needed to run a
+worker with zero build step and zero Python install: the compiled
+engine (`chess`, `chess_train`), the worker client itself frozen into
+a single executable, and (as of the fix below) `train.py`/`export.py`
+also frozen into their own standalone executables
+(`nnue_train`/`nnue_export`) so `--trainer-capable`'s CPU training
+path works out of the box too — a contributor should not need to
+clone this repo, install a C++ toolchain, or install Python at all.
+See `.github/workflows/release.yml` for exactly what each archive
+contains and how it's built.
+
+**Why this needed its own fix:** the frozen worker used to try running
+`train.py`/`export.py` via `sys.executable` — correct when running
+from source (a real Python interpreter), but under a PyInstaller-
+frozen `worker.exe`, `sys.executable` points back at `worker.exe`
+itself, not a real Python. That meant every packaged release's
+`--trainer-capable` path was completely non-functional (it would fail
+immediately with `worker.exe`'s own argument-parser error) until this
+was fixed by freezing those two scripts the same way `worker.exe`
+itself already is, and having the worker invoke them directly instead
+of shelling out to a nonexistent interpreter.
