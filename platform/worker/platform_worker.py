@@ -321,9 +321,26 @@ def main():
 
             try:
                 _dispatch_task(task, client, args, state['engine_version'], monitor)
-            except (DataGenerationError, EloMatchError, TrainNetworkError) as e:
+            except (DataGenerationError, EloMatchError, TrainNetworkError,
+                    ServerUnavailable) as e:
                 log(f"task {task['task_id']} ({task['task_type']}) failed: {e} -- "
                     f"its lease will expire and it will be reassigned")
+            except Exception as e:
+                # Broader than the expected-failure types above on purpose: this
+                # is the one place every task type funnels through, and
+                # WORKER.md documents that a failed task should be logged and
+                # moved on from (its server-side lease expires and it gets
+                # reassigned, same recovery path as a crashed/disconnected
+                # worker), not that the whole process should die. Before this,
+                # a network hiccup mid-upload during DATA_GENERATION/ELO_MATCH/
+                # TRAIN_NETWORK (unlike SELF_PLAY's TaskRunner._flush, which
+                # already caught ServerUnavailable) escaped uncaught and killed
+                # the entire worker. Deliberately excludes BaseException, so
+                # Ctrl+C and the --auto-update os.execv restart path are
+                # unaffected.
+                log(f"task {task['task_id']} ({task['task_type']}) failed unexpectedly "
+                    f"({e.__class__.__name__}: {e}) -- its lease will expire and it will "
+                    f"be reassigned")
             tasks_done += 1
 
             if args.once:
