@@ -21,6 +21,33 @@ import argparse
 import json
 import os
 import platform
+import sys
+
+
+def get_install_dir():
+    """Directory containing the actually-running worker, for locating
+    sibling files: the default --state-file/--artifacts-cache-dir
+    location, and (see platform/trainer/train_network.py) the bundled
+    train/export binaries a frozen release ships next to worker.exe.
+
+    Under a normal `python3 platform_worker.py` source run, this is just
+    __file__'s directory, as it always was. Under a PyInstaller --onefile
+    freeze (see .github/workflows/release.yml -- this is what worker.exe
+    actually is in every downloadable release), __file__ resolves into a
+    fresh temporary extraction directory every single run (deleted again
+    on exit), NOT the real, permanent folder the user extracted the
+    release zip into -- so anything computed from it (a saved
+    registration state file, a cache directory) silently vanishes the
+    moment the process exits, forcing a contributor to re-register (or
+    re-download artifacts) on every single run. sys.executable is the
+    one that correctly points at the real, on-disk .exe path in that
+    case (PyInstaller sets sys.frozen=True and rewrites sys.executable
+    for exactly this reason), so this branches on sys.frozen to pick
+    whichever one is actually correct for how this process is running.
+    """
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 def parse_args(argv=None):
@@ -36,7 +63,7 @@ def parse_args(argv=None):
                      help='legacy shared-secret registration, only if the server operator '
                           'enabled CHESS_PLATFORM_REGISTRATION_SECRET; prefer --api-key')
     ap.add_argument('--state-file', default=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), 'worker_state.json'))
+        get_install_dir(), 'worker_state.json'))
     ap.add_argument('--hostname', default=platform.node() or 'unknown-host')
     ap.add_argument('--threads', type=int, default=1,
                      help='number of self-play games to run concurrently')
@@ -79,7 +106,7 @@ def parse_args(argv=None):
                           '(cosmetic only -- for operator visibility, does not affect task '
                           'eligibility)')
     ap.add_argument('--artifacts-cache-dir', default=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), 'artifacts_cache'),
+        get_install_dir(), 'artifacts_cache'),
         help='local cache directory for downloaded, hash-verified artifacts (datasets, '
              'checkpoints, NNUE networks -- see artifacts.py)')
     ap.add_argument('--train-bin', default=None,

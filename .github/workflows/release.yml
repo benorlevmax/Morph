@@ -135,6 +135,38 @@ jobs:
           # freeze actually bundled everything the CLI parser needs.
           ./dist_worker/${{ matrix.worker_bin }} --help
 
+      # --- pipeline binaries: train.py/export.py frozen the same way, so a
+      #     --trainer-capable worker never needs a real Python interpreter or
+      #     the .py source on disk either. Without this, train_network.py's
+      #     _run_pipeline_script() had nothing runnable to invoke in a frozen
+      #     worker -- sys.executable points back at worker.exe itself under a
+      #     PyInstaller onefile freeze, not a real Python, so every packaged
+      #     release's CPU-training path was completely non-functional (a real
+      #     bug, caught via a live contributor's TRAIN_NETWORK task failing on
+      #     worker.exe's own argparse). See train_network.py's
+      #     _run_pipeline_script docstring for the full story. ---
+      - name: Freeze pipeline scripts (train.py / export.py)
+        shell: bash
+        run: |
+          pyinstaller --onefile --name nnue_train \
+            --paths tools/nnue_pipeline \
+            --hidden-import nnue_format \
+            --distpath dist_worker \
+            tools/nnue_pipeline/train.py
+          pyinstaller --onefile --name nnue_export \
+            --paths tools/nnue_pipeline \
+            --hidden-import nnue_format \
+            --distpath dist_worker \
+            tools/nnue_pipeline/export.py
+
+      - name: Smoke-test frozen pipeline binaries
+        shell: bash
+        run: |
+          NNUE_TRAIN_BIN="dist_worker/nnue_train${{ runner.os == 'Windows' && '.exe' || '' }}"
+          NNUE_EXPORT_BIN="dist_worker/nnue_export${{ runner.os == 'Windows' && '.exe' || '' }}"
+          "$NNUE_TRAIN_BIN" --help
+          "$NNUE_EXPORT_BIN" --help
+
       # --- package: engine binaries + frozen worker + VERSION, ready to
       #     run with no build step and no Python install on the contributor's
       #     machine ---
@@ -146,6 +178,8 @@ jobs:
           cp build/bin/Release/chess.exe dist/
           cp build/bin/Release/chess_train.exe dist/ 2>/dev/null || true
           cp dist_worker/worker.exe dist/
+          cp dist_worker/nnue_train.exe dist/
+          cp dist_worker/nnue_export.exe dist/
           cp platform/worker/VERSION dist/
           cd dist && 7z a -tzip "../worker-windows-${{ needs.determine-version.outputs.version }}.zip" .
 
@@ -156,8 +190,10 @@ jobs:
           cp build/bin/chess dist/
           cp build/bin/chess_train dist/ 2>/dev/null || true
           cp dist_worker/worker dist/
+          cp dist_worker/nnue_train dist/
+          cp dist_worker/nnue_export dist/
           cp platform/worker/VERSION dist/
-          chmod +x dist/worker dist/chess dist/chess_train 2>/dev/null || true
+          chmod +x dist/worker dist/chess dist/chess_train dist/nnue_train dist/nnue_export 2>/dev/null || true
           tar -C dist -czf "worker-linux-${{ needs.determine-version.outputs.version }}.tar.gz" .
 
       - name: Upload release artifact

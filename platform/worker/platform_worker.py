@@ -40,7 +40,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from platform_client import PlatformClient, ServerUnavailable
-from platform_config import parse_args, load_state, save_state
+from platform_config import parse_args, load_state, save_state, get_install_dir
 from resource_limits import ResourceMonitor
 from selfplay import SelfPlayEngine, play_selfplay_game
 from updater import check_for_update, perform_self_update, read_local_version
@@ -51,7 +51,9 @@ from elo_match import run_elo_match, EloMatchError
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'trainer'))
 from train_network import run_train_network, TrainNetworkError  # noqa: E402
 
-INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
+INSTALL_DIR = get_install_dir()  # see platform_config.py's get_install_dir()
+                                  # docstring -- __file__ alone is wrong here
+                                  # under a frozen worker.exe.
 
 
 def log(msg):

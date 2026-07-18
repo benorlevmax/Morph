@@ -70,6 +70,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  '..', 'worker'))
 from artifacts import fetch_artifact, ArtifactVerificationError  # noqa: E402
 from capabilities import detect_capabilities  # noqa: E402
+from platform_config import get_install_dir  # noqa: E402
 
 PIPELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              '..', '..', 'tools', 'nnue_pipeline')
@@ -88,15 +89,59 @@ class TrainNetworkError(Exception):
     pass
 
 
+# Maps a tools/nnue_pipeline/*.py script to the name of its frozen,
+# standalone-executable equivalent (see .github/workflows/release.yml's
+# 'Freeze pipeline scripts' step) -- these ship bundled next to worker.exe
+# in every release archive so a frozen worker never needs a real Python
+# interpreter or the .py source on disk, exactly like worker.exe itself
+# already doesn't.
+_FROZEN_BINARY_NAMES = {'train.py': 'nnue_train', 'export.py': 'nnue_export'}
+
+
+def _frozen_pipeline_binary_path(script_name):
+    base_name = _FROZEN_BINARY_NAMES.get(script_name, os.path.splitext(script_name)[0])
+    if os.name == 'nt':
+        base_name += '.exe'
+    return os.path.join(get_install_dir(), base_name)
+
+
 def _run_pipeline_script(script_name, cmd_args, log, timeout, cwd=None):
-    """Runs one tools/nnue_pipeline/*.py script as a subprocess of the
-    same Python interpreter running this worker. Subprocess (not an
+    """Runs one tools/nnue_pipeline/*.py script. Subprocess (not an
     in-process import) so a crash/hang in the trainer can't take the
     worker process down with it, matching how every other executor in
     this platform (data_generation.py, elo_match.py) shells out to
-    independently-testable scripts."""
-    script_path = os.path.join(PIPELINE_DIR, script_name)
-    cmd = [sys.executable, script_path] + cmd_args
+    independently-testable scripts.
+
+    Two invocation modes, chosen automatically via sys.frozen:
+
+      * Frozen (a real downloaded worker.exe/worker release -- see
+        .github/workflows/release.yml): sys.executable points back at
+        worker.exe itself under a PyInstaller onefile freeze, not a real
+        Python interpreter -- so unconditionally building
+        [sys.executable, script_path] actually re-invoked worker.exe's own
+        CLI with train.py's arguments, which immediately failed on
+        worker.exe's own argparse ('the following arguments are required:
+        --server, --engine-bin'). The release archive also never shipped
+        the .py source files at all. Net effect: the entire --trainer-
+        capable CPU-training path was completely non-functional in every
+        packaged release -- a real bug, caught via a live contributor's
+        TRAIN_NETWORK task failing with exactly that argparse error. Fixed
+        by running the script's own frozen, standalone binary directly
+        (no interpreter needed), shipped bundled next to worker.exe.
+      * Source (`python3 platform_worker.py ...`): unchanged -- the real
+        Python interpreter plus the actual script path.
+    """
+    if getattr(sys, 'frozen', False):
+        binary_path = _frozen_pipeline_binary_path(script_name)
+        if not os.path.isfile(binary_path):
+            raise TrainNetworkError(
+                f'frozen worker but {os.path.basename(binary_path)} is missing from '
+                f'{get_install_dir()} -- this release archive was not built with the '
+                f'pipeline binaries bundled (see .github/workflows/release.yml)')
+        cmd = [binary_path] + cmd_args
+    else:
+        script_path = os.path.join(PIPELINE_DIR, script_name)
+        cmd = [sys.executable, script_path] + cmd_args
     log(f'[train_network] running: {" ".join(cmd)}')
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
