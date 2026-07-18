@@ -75,6 +75,7 @@ volunteer worker machines.
 | `CHESS_PLATFORM_RATE_LIMIT_LOGIN_PER_15MIN` | `10` | per-IP login attempt cap |
 | `CHESS_PLATFORM_MAX_ARTIFACT_BYTES` | `536870912` (512 MiB) | max single artifact upload size |
 | `CHESS_PLATFORM_WORKER_VERSION` | `1.0.0` | advertised via `GET /version` for worker auto-update checks |
+| `CHESS_PLATFORM_MAX_CONNECTED_WORKERS` | `40` | new `POST /register` calls get a 503 once this many workers are already connected -- see 'Capacity and alerts' below |
 
 ## API surface
 
@@ -102,10 +103,48 @@ volunteer worker machines.
 `SELF_PLAY`), `POST /admin/tasks/typed` (any task type),
 `GET /admin/tasks`, `POST /admin/artifacts` (seed from a local file),
 `POST /admin/artifacts/{id}/accept`, `POST /admin/workers/{id}/disable`,
-`POST /admin/workers/{id}/enable`
+`POST /admin/workers/{id}/enable`, `GET /admin/system-load` (see below)
 
 Full request/response shapes: run the server and check `GET /docs`
 (FastAPI's auto-generated interactive API docs).
+
+## Capacity and alerts
+
+A small deploy target (a single free-tier instance, say) can't take
+unlimited concurrent workers. Two pieces work together to handle that
+without requiring dedicated infrastructure-monitoring software:
+
+**The cap itself.** Once `CHESS_PLATFORM_MAX_CONNECTED_WORKERS` workers
+are simultaneously connected (not disabled, seen within the last 10
+minutes), `POST /register` starts returning `503` to *new* registration
+attempts with a message explaining the server is full. Already-registered
+workers are never affected -- they keep polling and submitting normally;
+only brand-new sign-ups are turned away while the server is at capacity.
+Raise the env var if your hardware can take more; the default (`40`) is
+deliberately conservative for a single-OCPU box.
+
+**Seeing it coming.** `GET /admin/system-load` (admin token required)
+returns a point-in-time snapshot: current connected-worker count against
+the cap, pending task queue depth, and (Linux-only, parsed straight from
+`/proc` -- no extra dependency) load average, memory, and disk usage of
+the artifacts directory's filesystem. It's meant to be polled externally
+-- e.g. a cron job, or a Cowork scheduled task -- rather than watched
+live; the response itself doesn't track history, so an external poller
+that wants a trend needs to keep its own.
+
+```bash
+curl -s $SERVER/admin/system-load -H "X-Admin-Token: $TOKEN"
+```
+
+```json
+{
+  "connected_workers": 12, "max_connected_workers": 40, "at_worker_capacity": false,
+  "pending_tasks": 3, "cpu_count": 1,
+  "load_average": {"1min": 0.31, "5min": 0.22, "15min": 0.18},
+  "memory": {"total_mb": 981.2, "available_mb": 512.4, "used_percent": 47.8},
+  "disk": {"total_gb": 45.0, "free_gb": 38.1, "used_percent": 15.3}
+}
+```
 
 ## Creating tasks
 

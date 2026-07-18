@@ -6,7 +6,7 @@ worker-list schemas are reused directly from distributed/server/models.py
 """
 import os
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -155,6 +155,21 @@ class RegisterArtifactRequest(BaseModel):
     file_path: str
     accepted: bool = False
     metadata: Optional[dict] = None
+
+
+class SystemLoadResponse(BaseModel):
+    """GET /admin/system-load -- see system_load.py for how each field
+    is computed. memory/disk/load_average are Optional because they come
+    from parsing /proc or os.getloadavg(), which degrade to None rather
+    than erroring on a non-Linux dev machine."""
+    connected_workers: int
+    max_connected_workers: int
+    at_worker_capacity: bool
+    pending_tasks: int
+    cpu_count: Optional[int] = None
+    load_average: Optional[Dict[str, float]] = None
+    memory: Optional[Dict[str, Any]] = None
+    disk: Optional[Dict[str, Any]] = None
 
 
 class MatchResultRequest(BaseModel):

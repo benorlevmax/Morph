@@ -43,6 +43,10 @@ services:
       # require per-account API keys only (recommended for a public server).
       CHESS_PLATFORM_REGISTRATION_SECRET: ${CHESS_PLATFORM_REGISTRATION_SECRET:-}
       CHESS_PLATFORM_RATE_LIMIT_SUBMISSIONS_PER_MIN: ${CHESS_PLATFORM_RATE_LIMIT_SUBMISSIONS_PER_MIN:-30}
+      # Load safety valve -- see platform_config.py's max_connected_workers
+      # docstring and GET /admin/system-load. 40 is a conservative default
+      # for a small single-OCPU deploy target; raise it on bigger hardware.
+      CHESS_PLATFORM_MAX_CONNECTED_WORKERS: ${CHESS_PLATFORM_MAX_CONNECTED_WORKERS:-40}
     volumes:
       - platform-data:/data
       # NOTE: this used to also read-only-mount ../../experiments,

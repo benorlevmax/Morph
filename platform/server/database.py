@@ -626,6 +626,24 @@ class PlatformDatabase(DistDatabase):
             out.setdefault(r['task_type'], {})[r['status']] = r['c']
         return out
 
+    def count_connected_workers(self, recent_seconds=600):
+        """How many workers count as 'currently active' for capacity
+        purposes: not disabled, and with a last_seen_at within
+        recent_seconds (same 'connected' definition and default window as
+        get_worker_capability_counts, but a single COUNT(*) with no
+        capabilities JSON parsing -- this runs on every POST /register,
+        so it's kept as cheap as possible rather than reusing the heavier
+        method for a number it doesn't otherwise need."""
+        conn = self._conn()
+        try:
+            cutoff = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - recent_seconds))
+            row = conn.execute(
+                'SELECT COUNT(*) c FROM workers WHERE disabled = 0 AND last_seen_at >= ?',
+                (cutoff,)).fetchone()
+            return int(row['c'])
+        finally:
+            conn.close()
+
     def get_worker_capability_counts(self, recent_seconds=600):
         """Live counts of CPU-only vs. GPU-capable workers, split out from
         the flat 'active_workers' (== not disabled) figure get_stats()

@@ -97,6 +97,21 @@ class Settings:
         self.max_artifact_upload_bytes = int(
             os.environ.get('CHESS_PLATFORM_MAX_ARTIFACT_BYTES', str(512 * 1024 * 1024)))  # 512 MiB
 
+        # Caps how many *currently connected* workers (see
+        # database.py's count_connected_workers -- not disabled, seen
+        # within the last 10 minutes) POST /register will accept before
+        # turning new registrations away with a 503. This is a load
+        # safety valve, not a community-size limit: an already-registered
+        # worker that goes quiet for a while doesn't count against the
+        # cap, and no existing worker is ever kicked -- only *new*
+        # registrations are throttled while the server is full. Default
+        # of 40 is deliberately conservative for a small single-OCPU
+        # deploy target (see GET /admin/system-load for the live number
+        # this is being compared against); raise it freely on bigger
+        # hardware.
+        self.max_connected_workers = int(
+            os.environ.get('CHESS_PLATFORM_MAX_CONNECTED_WORKERS', '40'))
+
     def print_startup_banner(self):
         print('=' * 78)
         print('Morph Community Compute Platform - server')

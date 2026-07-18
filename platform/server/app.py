@@ -25,7 +25,7 @@ Database), plus what a public deployment needs on top:
                 GET /stats, GET /workers, GET /version
     Admin:      POST /admin/tasks, GET /admin/tasks, POST /admin/tasks/typed,
                 POST /admin/artifacts, POST /admin/pipeline/export-dataset,
-                POST /admin/pipeline/prune-positions,
+                POST /admin/pipeline/prune-positions, GET /admin/system-load,
                 POST /admin/artifacts/{id}/accept, GET /admin/artifacts/{id}/match-results,
                 POST /admin/workers/{id}/disable, POST /admin/workers/{id}/enable
 
@@ -55,6 +55,7 @@ from platform_config import settings
 from database import PlatformDatabase
 from ratelimit import limiter
 from dashboard_data import build_dashboard_summary, build_elo_series
+from system_load import build_system_load_snapshot
 from schemas import (
     RegisterUserRequest, UserResponse, LoginRequest, LoginResponse, ApiKeyResponse,
     WorkerRegisterRequest, WorkerRegisterResponse, LeaderboardResponse,
@@ -62,7 +63,7 @@ from schemas import (
     WorkerCapabilities, TypedTaskResponse, CreateTypedTaskRequest, CreateTypedTaskResponse,
     ArtifactResponse, RegisterArtifactRequest, MatchResultRequest, MatchResultResponse,
     ArtifactUploadResponse, ExportDatasetRequest, ExportDatasetResponse,
-    PrunePositionsRequest, PrunePositionsResponse,
+    PrunePositionsRequest, PrunePositionsResponse, SystemLoadResponse,
 )
 from validation import validate_position, content_hash  # distributed/server/validation.py
 
@@ -173,6 +174,21 @@ def register_worker(req: WorkerRegisterRequest, request: Request):
     if not limiter.check(f'wregister:{client_ip(request)}',
                           settings.rate_limit_registrations_per_hour, 3600):
         raise HTTPException(status_code=429, detail='too many registration attempts, try later')
+
+    # Load safety valve (see platform_config.py's max_connected_workers
+    # docstring): once the server already has as many *connected* workers
+    # as it's configured to handle, turn away new registrations rather
+    # than accept them and let everyone's experience quietly degrade.
+    # Deliberately does NOT affect already-registered workers re-polling
+    # or re-authenticating -- only brand-new POST /register calls. An
+    # operator can watch this coming via GET /admin/system-load before it
+    # ever triggers.
+    connected = db.count_connected_workers()
+    if connected >= settings.max_connected_workers:
+        raise HTTPException(
+            status_code=503,
+            detail=f'server is at capacity ({connected}/{settings.max_connected_workers} '
+                   f'connected workers) -- please try again later')
 
     if req.api_key:
         user = db.get_user_by_api_key(req.api_key)
@@ -709,6 +725,32 @@ def prune_positions(req: PrunePositionsRequest, _=Depends(require_admin)):
     deleted = db.delete_positions_up_to(prune_up_to)
     return PrunePositionsResponse(pruned=True, deleted_count=deleted,
                                    deleted_up_to_id=prune_up_to)
+
+
+@app.get('/admin/system-load', response_model=SystemLoadResponse)
+def system_load(_=Depends(require_admin)):
+    """Point-in-time capacity snapshot for external monitoring -- built
+    for small, single-instance deployments (see platform_config.py's
+    max_connected_workers) where an operator has no existing
+    infrastructure-monitoring stack and just wants a cheap thing to poll
+    (e.g. from a cron job or scheduled task) and get alerted from. Not a
+    time series -- callers that want trends should poll this repeatedly
+    and keep their own history.
+
+    connected_workers/at_worker_capacity reflect the exact same check
+    POST /register enforces (see there), so 'at_worker_capacity: true'
+    here means new registrations are currently being turned away.
+    pending_tasks is a queue-depth signal: a large and growing number
+    without more connected workers to drain it is itself worth flagging,
+    independent of raw CPU/memory. See system_load.py for how
+    load_average/memory/disk are computed (pure /proc parsing, no
+    extra dependency)."""
+    connected = db.count_connected_workers()
+    task_counts = db.get_task_counts_by_type()
+    pending_tasks = sum(counts.get('pending', 0) for counts in task_counts.values())
+    snapshot = build_system_load_snapshot(
+        connected, settings.max_connected_workers, pending_tasks, settings.artifacts_dir)
+    return SystemLoadResponse(**snapshot)
 
 
 @app.post('/admin/artifacts/{artifact_id}/accept')
