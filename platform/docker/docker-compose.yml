@@ -96,6 +96,13 @@ services:
       - --interval-seconds=${AUTO_PIPELINE_INTERVAL_SECONDS:-300}
       - --experiment-candidates=${AUTO_PIPELINE_EXPERIMENT_CANDIDATES:-1}
       - --elo-games=${AUTO_PIPELINE_ELO_GAMES:-24}
+      # Random opening plies before engine search takes over, for both
+      # DATA_GENERATION and SELF_PLAY tasks -- see auto_pipeline.py's
+      # --randomplies help text. Raised from the old hardcoded 6 after
+      # observing 100% duplicate-position batches once the dataset grew
+      # into the hundreds of thousands; override higher still if that
+      # keeps happening.
+      - --randomplies=${AUTO_PIPELINE_RANDOMPLIES:-12}
       # Push-notification alerting (see auto_pipeline.py's Stage 5 comment):
       # this same container checks its own server's capacity/health each
       # cycle and, when something needs attention, pushes a notification

@@ -113,7 +113,7 @@ def ensure_cpu_queue(client, args):
                 'task_type': 'DATA_GENERATION',
                 'payload': {'games': args.data_generation_games,
                             'depth': args.data_generation_depth,
-                            'randomplies': 6},
+                            'randomplies': args.randomplies},
             })
 
     sp_pending = by_type.get('SELF_PLAY', 0)
@@ -125,7 +125,7 @@ def ensure_cpu_queue(client, args):
             'total_positions': args.selfplay_batch_positions,
             'chunk_size': args.selfplay_chunk_size,
             'depth': args.selfplay_depth,
-            'randomplies': 6,
+            'randomplies': args.randomplies,
         })
 
 
@@ -355,6 +355,19 @@ def parse_args():
     ap.add_argument('--selfplay-batch-positions', type=int, default=5000)
     ap.add_argument('--selfplay-chunk-size', type=int, default=500)
     ap.add_argument('--selfplay-depth', type=int, default=6)
+    ap.add_argument('--randomplies', type=int, default=12,
+                     help='random opening plies before depth-limited engine search takes '
+                          'over, for both DATA_GENERATION and SELF_PLAY tasks. Higher '
+                          'values spread games across a wider position space, which '
+                          'matters increasingly as the accumulated dataset grows -- too '
+                          'few random plies means independent games keep reconverging '
+                          'onto the same already-collected lines (observed in practice: '
+                          'DATA_GENERATION batches coming back 100%% duplicate once the '
+                          'dataset reached several hundred thousand positions at the old '
+                          'default of 6). Raise further if duplicate rates stay high; too '
+                          'high a value starts producing unrealistic, low-quality opening '
+                          'positions unlike anything from real play, so this is a tradeoff, '
+                          'not a free dial.')
 
     ap.add_argument('--min-new-positions', type=int, default=2000,
                      help='minimum newly-accepted positions before exporting a training dataset')
