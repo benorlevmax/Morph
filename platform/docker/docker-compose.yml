@@ -1,10 +1,21 @@
 # platform/docker/docker-compose.yml - Runs the community-compute server
 # (the task coordinator -- see platform/server/) AND the automated
 # improvement-loop controller (auto_pipeline.py) that closes it end to end.
-# Run from this directory:
+#
+# The `image:` on both services now points at a prebuilt image published by
+# .github/workflows/docker-publish.yml on every push to main (GHCR, public,
+# no login needed to pull). This means a deploy target -- especially a small
+# one like an Oracle Cloud Always Free instance -- only ever needs to PULL,
+# never build:
 #
 #   cd platform/docker
+#   CHESS_PLATFORM_ADMIN_TOKEN=$(openssl rand -hex 16) docker compose pull
 #   CHESS_PLATFORM_ADMIN_TOKEN=$(openssl rand -hex 16) docker compose up -d
+#
+# The `build:` block is left in place purely for local development (`docker
+# compose up -d --build` still works and rebuilds from source) -- it is not
+# used by the pull path above, since `image:` takes precedence once the tag
+# already exists locally or is pulled from the registry.
 #
 # CHESS_PLATFORM_ADMIN_TOKEN MUST be set explicitly for this compose file
 # (unlike running the server alone, where an unset token just makes it
@@ -22,7 +33,7 @@ services:
     build:
       context: ../..
       dockerfile: platform/docker/Dockerfile
-    image: chess-platform-server:latest
+    image: ghcr.io/benorlevmax/morph-server:latest
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -65,7 +76,7 @@ services:
     build:
       context: ../..
       dockerfile: platform/docker/Dockerfile
-    image: chess-platform-server:latest
+    image: ghcr.io/benorlevmax/morph-server:latest
     restart: unless-stopped
     depends_on:
       server:

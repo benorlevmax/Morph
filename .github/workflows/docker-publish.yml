@@ -1,0 +1,55 @@
+name: Publish server Docker image
+
+# Builds platform/docker/Dockerfile (the community-compute server + auto-
+# pipeline image -- see platform/docker/docker-compose.yml) on GitHub's
+# runners and pushes it to GHCR. This exists so a tiny, memory-constrained
+# host (e.g. an Oracle Cloud Always Free instance) never has to build the
+# image itself -- it only needs to `docker compose pull`. The image build
+# here is lightweight (python:3.11-slim + pip install, no C++ toolchain --
+# it does not compile the engine), but even that pip install plus the
+# layer transfer was more than a 1GB-RAM box could comfortably do on top
+# of everything else, so moving it here removes that step entirely from
+# the deploy target.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'platform/**'
+      - 'distributed/**'
+      - '.github/workflows/docker-publish.yml'
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/morph-server
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: platform/docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
