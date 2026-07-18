@@ -58,7 +58,31 @@ class PlatformClient:
                 if resp.status_code == 409:
                     raise PermissionError(f'{method} {path}: 409 {resp.text}')
                 if resp.status_code == 429:
-                    raise RuntimeError(f'{method} {path}: 429 rate limited: {resp.text}')
+                    # Rate-limited (see platform/server/ratelimit.py) --
+                    # this is expected, routine behavior for a healthy
+                    # worker (e.g. multiple --threads submitting batches
+                    # close together), not a fatal error, so it goes
+                    # through the same retry/backoff path as a connection
+                    # blip rather than crashing the whole worker process.
+                    # Honors a Retry-After header if the server sends one,
+                    # otherwise falls back to the same exponential backoff
+                    # used below (the limiter's window is short -- default
+                    # 60s -- so this reliably clears within max_retries).
+                    if not retry or attempt > self.max_retries:
+                        raise RuntimeError(
+                            f'{method} {path}: 429 rate limited after {attempt} attempts: '
+                            f'{resp.text}')
+                    retry_after = resp.headers.get('Retry-After')
+                    try:
+                        delay = float(retry_after) if retry_after else None
+                    except ValueError:
+                        delay = None
+                    if delay is None:
+                        delay = min(self.backoff_base * (2 ** (attempt - 1)), self.backoff_cap)
+                    log(f'[client] {method} {path} rate limited (429); '
+                        f'retrying in {delay:.0f}s (attempt {attempt}/{self.max_retries})')
+                    time.sleep(delay)
+                    continue
                 if resp.status_code >= 400:
                     raise RuntimeError(f'{method} {path}: HTTP {resp.status_code}: {resp.text}')
                 if not resp.content:
