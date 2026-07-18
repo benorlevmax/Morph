@@ -100,6 +100,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r platform/requirements.txt
           pip install pyinstaller
+          # numpy: not a platform/worker or platform/server runtime dependency
+          # (hence not in platform/requirements.txt), but tools/nnue_pipeline/
+          # train.py and export.py both `import numpy as np` -- needed here
+          # purely so the "Freeze pipeline scripts" step below has it
+          # installed for PyInstaller to detect and bundle. Its absence is a
+          # real bug that broke every release build after v1.0.0-rc1 (the
+          # nnue_train/nnue_export freeze step was added later, without this
+          # line): the frozen binaries built fine but failed their own
+          # smoke-test with "ModuleNotFoundError: No module named 'numpy'",
+          # which fails the whole job and blocks the release from publishing
+          # any real worker archives -- see the "Freeze pipeline scripts"
+          # step's comment for the rest of that story.
+          pip install numpy
 
       - name: Sync VERSION file with tag
         shell: bash
@@ -148,14 +161,26 @@ jobs:
       - name: Freeze pipeline scripts (train.py / export.py)
         shell: bash
         run: |
+          # --collect-all numpy: numpy ships C-extension submodules
+          # (numpy.core._multiarray_umath and friends) that PyInstaller's
+          # static import analysis can miss even when the plain `import
+          # numpy as np` at the top of the file is detected fine -- belt and
+          # suspenders alongside the `pip install numpy` above, which fixes
+          # numpy not being installed at all (that was the actual observed
+          # failure: "ModuleNotFoundError: No module named 'numpy'" at the
+          # smoke-test step below, not a partial-submodule error), but
+          # --collect-all avoids trading that failure for a harder-to-debug
+          # partial one later.
           pyinstaller --onefile --name nnue_train \
             --paths tools/nnue_pipeline \
             --hidden-import nnue_format \
+            --collect-all numpy \
             --distpath dist_worker \
             tools/nnue_pipeline/train.py
           pyinstaller --onefile --name nnue_export \
             --paths tools/nnue_pipeline \
             --hidden-import nnue_format \
+            --collect-all numpy \
             --distpath dist_worker \
             tools/nnue_pipeline/export.py
 
