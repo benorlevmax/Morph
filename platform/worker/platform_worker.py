@@ -135,7 +135,13 @@ class TaskRunner:
                     break
                 records = play_selfplay_game(
                     engine, randomplies=self.payload['randomplies'],
-                    max_plies=self.args.max_plies, rng=rng)
+                    max_plies=self.args.max_plies, rng=rng,
+                    # .get() with a 0.0 default, not direct indexing like
+                    # 'randomplies' above: tasks queued by an older server
+                    # (before this field existed) won't have this key in
+                    # their payload at all, and 0.0 reproduces the exact old
+                    # behavior for them rather than crashing with KeyError.
+                    random_move_prob=self.payload.get('random_move_prob', 0.0))
                 for r in records:
                     self.record_queue.put(r)
                 with self.lock:

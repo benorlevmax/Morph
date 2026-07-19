@@ -158,11 +158,24 @@ def _random_opening(start_fen, plies, rng):
 
 
 def play_selfplay_game(engine, start_fen='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
-                        randomplies=6, max_plies=200, rng=None):
+                        randomplies=6, max_plies=200, rng=None, random_move_prob=0.0):
     """Play one full self-play game (engine vs itself) and return a list of
     position records: {fen, side_to_move, eval_cp, depth, nodes,
     engine_version}, plus `result` (White-relative game outcome) backfilled
-    onto every record once the game ends."""
+    onto every record once the game ends.
+
+    random_move_prob: mirrors src/train/selfplay.cpp's SelfPlayConfig::
+    randomMoveProb (see that struct's comment for the full story). Beyond
+    the fixed `randomplies`-ply opening, move selection here was previously
+    always engine.search()'s single best move for the rest of the game --
+    deterministic once the opening is fixed, which is fine for a small
+    position database but stops preventing duplicates once it's large: two
+    games whose (different) openings transpose into the same position then
+    play out an identical, already-collected continuation forever after.
+    With this > 0, each post-opening ply independently has this probability
+    of playing a uniformly random legal move instead (not recorded, same as
+    an opening move -- its position was never actually evaluated by real
+    search). 0.0 (default) preserves the exact old behavior."""
     rng = rng or random.Random()
     engine.new_game()
 
@@ -178,6 +191,15 @@ def play_selfplay_game(engine, start_fen='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB
         if board.is_game_over(claim_draw=True):
             break
         stm = 'w' if board.turn == _pychess.WHITE else 'b'
+
+        if random_move_prob > 0.0 and rng.random() < random_move_prob:
+            legal = list(board.legal_moves)
+            if not legal:
+                break
+            mv = rng.choice(legal)
+            moves.append(mv.uci())
+            board.push(mv)
+            continue
 
         bestmove, eval_white, depth, nodes = engine.search(start_fen, moves)
         if not bestmove or bestmove in ('(none)', 'none', '0000'):

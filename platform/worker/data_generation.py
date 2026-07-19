@@ -129,18 +129,31 @@ def run_data_generation(task, client, engine_bin, engine_version, args, log=prin
     games = int(payload.get('games', 10))
     depth = int(payload.get('depth', 6))
     randomplies = int(payload.get('randomplies', 4))
+    # .get() default 0.0, not required: older already-queued tasks (from
+    # before this field existed) won't have it in their payload, and 0.0
+    # reproduces chess_train gen's exact old behavior for them. See
+    # src/train/selfplay.h's SelfPlayConfig::randomMoveProb for why this
+    # exists -- randomplies alone (a fixed opening-only prefix) stops being
+    # enough to avoid duplicate positions once the server's dataset is
+    # large, since search is deterministic after the opening and games
+    # that transpose into an already-explored position then produce
+    # identical, already-collected continuations forever after.
+    random_move_prob = float(payload.get('random_move_prob', 0.0))
 
     train_bin = _find_train_binary(engine_bin, getattr(args, 'train_bin', None))
     seed = _task_seed(task['task_id'])
     log(f"[data_generation] task {task['task_id']}: {games} games, depth={depth}, "
-        f"randomplies={randomplies}, seed={seed}, using {train_bin}")
+        f"randomplies={randomplies}, random_move_prob={random_move_prob}, seed={seed}, "
+        f"using {train_bin}")
 
     fd, out_path = tempfile.mkstemp(prefix='chess_train_gen_', suffix='.txt')
     os.close(fd)
     try:
         proc = subprocess.run(
             [train_bin, 'gen', '--games', str(games), '--depth', str(depth),
-             '--randomplies', str(randomplies), '--seed', str(seed),
+             '--randomplies', str(randomplies),
+             '--random-move-prob', str(random_move_prob),
+             '--seed', str(seed),
              '--format', 'bullet-ext', '--out', out_path],
             capture_output=True, text=True, timeout=max(300, games * 30))
         if proc.returncode != 0:

@@ -103,6 +103,18 @@ services:
       # into the hundreds of thousands; override higher still if that
       # keeps happening.
       - --randomplies=${AUTO_PIPELINE_RANDOMPLIES:-12}
+      # Per-ply probability, at every ply AFTER --randomplies' opening
+      # prefix, of a random move instead of the engine's search result --
+      # see auto_pipeline.py's --random-move-prob help text. This is the
+      # fix for --randomplies alone no longer preventing duplicates once
+      # the dataset is large: independent games' openings increasingly
+      # transpose back into an already-explored position mid-game, and
+      # search is deterministic from there on, so every move after that
+      # shared position was byte-identical between the two games regardless
+      # of how different their openings were (observed in practice:
+      # DATA_GENERATION batches still coming back 100% duplicate at
+      # --randomplies=12 once the dataset reached ~500K positions).
+      - --random-move-prob=${AUTO_PIPELINE_RANDOM_MOVE_PROB:-0.03}
       # Push-notification alerting (see auto_pipeline.py's Stage 5 comment):
       # this same container checks its own server's capacity/health each
       # cycle and, when something needs attention, pushes a notification

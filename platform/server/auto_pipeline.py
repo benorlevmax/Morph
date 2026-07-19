@@ -51,6 +51,7 @@ import argparse
 import os
 import sys
 import time
+import uuid
 
 import requests
 
@@ -113,20 +114,42 @@ def ensure_cpu_queue(client, args):
                 'task_type': 'DATA_GENERATION',
                 'payload': {'games': args.data_generation_games,
                             'depth': args.data_generation_depth,
-                            'randomplies': args.randomplies},
+                            'randomplies': args.randomplies,
+                            'random_move_prob': args.random_move_prob},
             })
 
     sp_pending = by_type.get('SELF_PLAY', 0)
     if sp_pending < args.queue_selfplay_if_below:
+        # Uses /admin/tasks/typed (not the legacy /admin/tasks bulk
+        # endpoint used before this change) specifically so random_move_prob
+        # can ride along in payload -- the bulk endpoint's request model
+        # (distributed/server/models.py's CreateTasksRequest, deliberately
+        # kept untouched/shared with the older LAN-only distributed system;
+        # see database.py's create_tasks_bulk docstring) has a fixed field
+        # set that silently drops any extra key, so passing
+        # random_move_prob to it would have been a silent no-op. Chunking
+        # is replicated manually here (the bulk endpoint did this
+        # server-side) so a big SELF_PLAY batch still splits into multiple
+        # independently-assignable tasks instead of one giant one.
+        total = args.selfplay_batch_positions
+        chunk = max(1, args.selfplay_chunk_size)
+        n_chunks = max(1, (total + chunk - 1) // chunk)
+        batch_label = 'selfplay_' + uuid.uuid4().hex[:8]
         log(f'SELF_PLAY queue low ({sp_pending} pending, threshold '
-            f'{args.queue_selfplay_if_below}) -- queueing {args.selfplay_batch_positions} '
-            f'more target positions')
-        client.post('/admin/tasks', {
-            'total_positions': args.selfplay_batch_positions,
-            'chunk_size': args.selfplay_chunk_size,
-            'depth': args.selfplay_depth,
-            'randomplies': args.randomplies,
-        })
+            f'{args.queue_selfplay_if_below}) -- queueing {total} more target '
+            f'positions across {n_chunks} task(s) of up to {chunk} each')
+        remaining = total
+        for _ in range(n_chunks):
+            this_chunk = min(chunk, remaining)
+            remaining -= this_chunk
+            client.post('/admin/tasks/typed', {
+                'task_type': 'SELF_PLAY',
+                'batch_label': batch_label,
+                'payload': {'target_positions': this_chunk,
+                            'depth': args.selfplay_depth,
+                            'randomplies': args.randomplies,
+                            'random_move_prob': args.random_move_prob},
+            })
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +391,24 @@ def parse_args():
                           'high a value starts producing unrealistic, low-quality opening '
                           'positions unlike anything from real play, so this is a tradeoff, '
                           'not a free dial.')
+
+    ap.add_argument('--random-move-prob', type=float, default=0.03,
+                     help='per-ply probability, at every ply AFTER the --randomplies opening '
+                          'prefix, of playing a uniformly random legal move instead of the '
+                          'engine search result, for both DATA_GENERATION and SELF_PLAY '
+                          'tasks. This is the fix for a real limitation --randomplies alone '
+                          'hits once the dataset is large: opening-only randomness stops '
+                          'preventing duplicates once independent games start transposing '
+                          'back into an already-explored position mid-game, because search '
+                          'is deterministic from there on -- every move after that shared '
+                          'position is then byte-identical between the two games, no matter '
+                          'how different their openings were (observed in practice: '
+                          'DATA_GENERATION batches still coming back 100%% duplicate at '
+                          '--randomplies=12 once the dataset reached ~500K positions). 0.0 '
+                          'disables this and reproduces the old opening-only-randomness '
+                          'behavior. Keep this small -- these injected moves are '
+                          'position-blind (no search backing them), so too high a value '
+                          'trades away realistic play quality for diversity.')
 
     ap.add_argument('--min-new-positions', type=int, default=2000,
                      help='minimum newly-accepted positions before exporting a training dataset')

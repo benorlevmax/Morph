@@ -43,6 +43,11 @@ int main(int argc, char** argv) {
                 return std::strtoull(argv[i + 1], nullptr, 10);
         return def;
     };
+    auto opt_d = [&](const char* name, double def) -> double {
+        for (int i = 2; i + 1 < argc; ++i)
+            if (std::strcmp(argv[i], name) == 0) return std::atof(argv[i + 1]);
+        return def;
+    };
     // A fresh, process-unique random seed for --seed's default. NOT used
     // when --seed is passed explicitly (reproducible runs still work).
     // This matters for distributed data generation specifically: many
@@ -68,6 +73,12 @@ int main(int argc, char** argv) {
         int nodes = opt_i("--nodes", 0);
         if (nodes > 0) { cfg.limits.nodes = std::uint64_t(nodes); cfg.limits.depth = 0; }
         cfg.randomPlies = opt_i("--randomplies", 8);
+        // See SelfPlayConfig::randomMoveProb (selfplay.h) -- 0.0 default
+        // preserves the exact old fixed-opening-only-randomness behavior;
+        // pass e.g. --random-move-prob 0.03 to also randomize ~3% of
+        // post-opening plies, which is what actually stops long
+        // deterministic-tail duplicate games once the dataset is large.
+        cfg.randomMoveProb = opt_d("--random-move-prob", 0.0);
         cfg.seed = opt_u64("--seed", fresh_random_seed());
         cfg.verbose = true;
         // "dat" (binary, versioned, includes instability fields since v2) |

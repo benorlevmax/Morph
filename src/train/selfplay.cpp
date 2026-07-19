@@ -13,6 +13,7 @@ const char* kStart = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 std::size_t generate_selfplay(const SelfPlayConfig& cfg, Dataset& out) {
     std::mt19937_64 rng(cfg.seed);
+    std::uniform_real_distribution<double> chance(0.0, 1.0);
     Search engine;
     engine.set_quiet(true);
 
@@ -40,8 +41,22 @@ std::size_t generate_selfplay(const SelfPlayConfig& cfg, Dataset& out) {
             if (pos.is_draw()) { resultWhite = 0; break; }
 
             Move move;
-            if (ply < cfg.randomPlies) {
-                // Random move for opening diversity (not recorded).
+            // Two independent sources of a "random move" ply: the fixed
+            // opening-diversity prefix (as before), and -- new -- a small
+            // per-ply chance of one later in the game too, whenever
+            // cfg.randomMoveProb > 0. See SelfPlayConfig::randomMoveProb's
+            // comment in selfplay.h for why the prefix alone stops being
+            // enough to avoid duplicates once the position database is
+            // large: deterministic search means two games that transpose
+            // into the same position after their (differing) openings then
+            // produce byte-identical continuations forever after.
+            const bool openingRandom = ply < cfg.randomPlies;
+            const bool midgameRandom = !openingRandom && cfg.randomMoveProb > 0.0
+                                        && chance(rng) < cfg.randomMoveProb;
+            if (openingRandom || midgameRandom) {
+                // Random move, not recorded -- its resulting position was
+                // never actually evaluated by real search, so it isn't a
+                // meaningful training label.
                 std::uniform_int_distribution<std::size_t> d(0, legal.size() - 1);
                 move = legal.begin()[d(rng)].move;
             } else {
