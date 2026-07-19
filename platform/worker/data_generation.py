@@ -32,6 +32,8 @@ import subprocess
 import tempfile
 import time
 
+from platform_client import ServerUnavailable
+
 
 class DataGenerationError(Exception):
     pass
@@ -121,10 +123,30 @@ def _task_seed(task_id):
 
 def run_data_generation(task, client, engine_bin, engine_version, args, log=print):
     """Executes one DATA_GENERATION task: run chess_train gen, parse its
-    output, upload every valid record in one batch, mark done. Raises
-    DataGenerationError on a hard failure (missing binary, generation
-    crash); the task's lease will simply expire and get reassigned, same
-    recovery path as any other task type."""
+    output, upload every valid record in --upload-batch-size-sized chunks
+    (same knob and same reasoning as platform_worker.py's SELF_PLAY
+    TaskRunner, which already streams uploads for exactly this reason).
+    Raises DataGenerationError on a hard failure (missing binary,
+    generation crash); the task's lease will simply expire and get
+    reassigned, same recovery path as any other task type.
+
+    Chunked, not one giant POST: this used to upload every record from a
+    batch (chess_train gen --games 200 alone regularly produces 20,000+
+    records) in a single /tasks/{id}/results call. PlatformClient's HTTP
+    timeout is a fixed 30s, and a 20k+-record submission can take the
+    server longer than that just to run every content-hash INSERT --
+    the *server* would go on to finish and commit the insert in its
+    background thread regardless of the client giving up, but the worker
+    would see a ReadTimeout, burn through 8 retries (several minutes) and,
+    on the retry that finally got a response in time, see every record
+    reported back as a 'duplicate' (because the earlier, timed-out attempt
+    had in fact already been saved) -- confusing to read and, if that
+    retry sequence itself was unlucky enough to exhaust its 8 attempts,
+    genuinely lost the whole batch's positions instead of just one chunk's
+    worth. Splitting into small chunks keeps each individual request well
+    under the timeout and, same as TaskRunner._flush, confines a
+    ServerUnavailable failure (all retries exhausted) to the chunk it
+    happened on rather than the entire batch."""
     payload = task['payload']
     games = int(payload.get('games', 10))
     depth = int(payload.get('depth', 6))
@@ -176,12 +198,36 @@ def run_data_generation(task, client, engine_bin, engine_version, args, log=prin
         if not records:
             raise DataGenerationError('chess_train gen produced no parseable records')
 
-        log(f'[data_generation] uploading {len(records)} positions')
-        resp = client.submit_results(task['task_id'], records, done=True)
-        if resp:
-            log(f"[data_generation] task {task['task_id']}: accepted={resp.get('accepted')} "
-                f"duplicates={resp.get('duplicates')} rejected={resp.get('rejected')}")
-        return resp
+        batch_size = max(1, int(getattr(args, 'upload_batch_size', 100) or 100))
+        n_chunks = (len(records) + batch_size - 1) // batch_size
+        log(f'[data_generation] uploading {len(records)} positions in '
+            f'{n_chunks} chunk(s) of up to {batch_size}')
+
+        totals = {'accepted': 0, 'duplicates': 0, 'rejected': 0}
+        last_resp = None
+        for i in range(0, len(records), batch_size):
+            chunk = records[i:i + batch_size]
+            is_last = (i + batch_size) >= len(records)
+            try:
+                resp = client.submit_results(task['task_id'], chunk, done=is_last)
+            except ServerUnavailable as e:
+                log(f'[data_generation] WARNING: failed to upload {len(chunk)} '
+                    f'positions after retries: {e} -- {len(chunk)} positions '
+                    f'lost for this chunk (continuing with the rest)')
+                continue
+            if resp is None:
+                continue
+            totals['accepted'] += resp.get('accepted', 0)
+            totals['duplicates'] += resp.get('duplicates', 0)
+            totals['rejected'] += resp.get('rejected', 0)
+            last_resp = resp
+
+        log(f"[data_generation] task {task['task_id']}: accepted={totals['accepted']} "
+            f"duplicates={totals['duplicates']} rejected={totals['rejected']}")
+        if last_resp is not None:
+            last_resp = dict(last_resp)
+            last_resp.update(totals)
+        return last_resp
     finally:
         try:
             os.remove(out_path)
