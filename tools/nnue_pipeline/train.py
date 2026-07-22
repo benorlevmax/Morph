@@ -60,7 +60,42 @@ LAMBDA = 0.5              # eval/result blend, matches src/train/encoding.h win_
 # ---------------------------------------------------------------------------
 # Dataset loading (generate.py's JSONL format)
 # ---------------------------------------------------------------------------
-def load_jsonl_datasets(paths, max_samples, seed=1):
+def _sample_bucket(fen):
+    """output_bucket(n_pieces) for a raw FEN -- used only for the Phase 3/4
+    verification logging below, kept as its own function so a parse failure
+    here can never take down loading itself (returns None, logged as
+    'unknown' rather than raising)."""
+    try:
+        board, _stm = parse_fen_board(fen)
+        return output_bucket(len(board))
+    except Exception:
+        return None
+
+
+def _log_bucket_distribution(samples, label, log=print):
+    """Prints the exact per-bucket count/percentage table Phase 3 of the
+    training-pipeline audit calls for -- this is what would have caught the
+    ~48,907-position / bucket-0-at-4.86% incident before it ever reached a
+    live Elo match, instead of after."""
+    counts = {b: 0 for b in range(NNUE_OUT_BUCKETS)}
+    unknown = 0
+    for s in samples:
+        b = _sample_bucket(s[0])
+        if b is None:
+            unknown += 1
+        else:
+            counts[b] += 1
+    total = len(samples)
+    log(f'[train] {label} bucket distribution (n={total}):')
+    for b in range(NNUE_OUT_BUCKETS):
+        pct = 100.0 * counts[b] / total if total else 0.0
+        log(f'[train]   bucket {b}: {counts[b]:>8}  ({pct:5.2f}%)')
+    if unknown:
+        log(f'[train]   unparseable FEN (bucket unknown): {unknown}')
+    return counts
+
+
+def load_jsonl_datasets(paths, max_samples, seed=1, balance_buckets=False, log=print):
     """Loads (fen, score_cp, wdl) samples from `paths`, shuffles, and (if
     max_samples truncates) prioritizes retention by search-instability
     signal (score_swing/best_move_changes, see search.h's SearchResult and
@@ -80,32 +115,81 @@ def load_jsonl_datasets(paths, max_samples, seed=1):
     disk in the dataset file, untouched, and can be sampled by a later run;
     nothing is deleted or invalidated. If no record carries the signal (an
     older export, or a source that never reported it), behavior is
-    byte-for-byte identical to the original: pure random shuffle + truncate."""
+    byte-for-byte identical to the original: pure random shuffle + truncate.
+
+    Robustness (Phase 3 of the training-pipeline audit): a single malformed
+    line used to crash the entire run (bare json.loads()/dict indexing, no
+    try/except) -- one bad line in a multi-hundred-thousand-line file would
+    lose the whole training cycle. Malformed/unparseable lines are now
+    skipped and counted (`invalid_count`) instead. Exact-duplicate records
+    (same fen+eval+result -- the server already dedups on ingestion via
+    content_hash, so these should normally be ~0; a nonzero count here means
+    either multiple dataset exports got concatenated via --data-dir with
+    overlapping ranges, or something upstream of this loader changed) are
+    also detected, dropped, and counted (`duplicate_count`) rather than
+    silently inflating the effective dataset size with redundant copies.
+
+    balance_buckets (Phase 4): when truncating to max_samples, allocate the
+    budget evenly across the 8 output buckets (by piece count) instead of a
+    blind/instability-weighted sample of the whole pool, which can leave a
+    naturally rare bucket (e.g. bucket 0, deep endgames) starved even though
+    plenty of OTHER buckets' data was available to trim instead. A bucket
+    that has fewer available samples than its even share simply contributes
+    everything it has; the unused portion of its share is redistributed to
+    buckets that still have supply left, so the total selected still equals
+    max_samples whenever enough data exists overall. Never invents or
+    duplicates data to force perfect balance -- a bucket with truly little
+    data stays the smallest, just no longer "share of whatever was left
+    after everyone else took their random cut" small."""
     samples = []
     has_signal = False
+    seen = set()
+    invalid_count = 0
+    duplicate_count = 0
+    total_lines = 0
     for path in paths:
         with open(path) as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                rec = json.loads(line)
-                # Accept both this pipeline's own field name ('eval') and the
-                # richer canonical schema training_server/ produces
-                # ('eval_cp', plus extra fields like side_to_move/nodes/source
-                # that we simply don't need here).
-                eval_field = 'eval' if 'eval' in rec else 'eval_cp'
+                total_lines += 1
+                try:
+                    rec = json.loads(line)
+                    # Accept both this pipeline's own field name ('eval') and
+                    # the richer canonical schema training_server/ produces
+                    # ('eval_cp', plus extra fields like side_to_move/nodes/
+                    # source that we simply don't need here).
+                    eval_field = 'eval' if 'eval' in rec else 'eval_cp'
+                    fen = rec['fen']
+                    score_cp = int(rec[eval_field])
+                    result = float(rec['result'])
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    invalid_count += 1
+                    continue
+                dedup_key = (fen, score_cp, result)
+                if dedup_key in seen:
+                    duplicate_count += 1
+                    continue
+                seen.add(dedup_key)
                 score_swing = rec.get('score_swing')
                 best_move_changes = rec.get('best_move_changes')
                 if score_swing is not None or best_move_changes is not None:
                     has_signal = True
-                samples.append((rec['fen'], int(rec[eval_field]), float(rec['result']),
-                                 score_swing, best_move_changes))
+                samples.append((fen, score_cp, result, score_swing, best_move_changes))
+
+    log(f'[train] loaded {len(samples)} valid sample(s) from {total_lines} line(s) '
+        f'across {len(paths)} file(s) (invalid={invalid_count}, duplicate={duplicate_count})')
+
     rng = random.Random(seed)
     rng.shuffle(samples)
 
     if max_samples and len(samples) > max_samples:
-        if has_signal:
+        _log_bucket_distribution(samples, 'pre-truncation (full loaded pool)', log=log)
+
+        if balance_buckets:
+            samples = _select_balanced_by_bucket(samples, max_samples, rng, has_signal, log=log)
+        elif has_signal:
             def instability(s):
                 sw, bmc = s[3], s[4]
                 return (sw or 0) + (bmc or 0) * 30
@@ -133,9 +217,70 @@ def load_jsonl_datasets(paths, max_samples, seed=1):
         else:
             samples = samples[:max_samples]
 
+    log(f'[train] selected {len(samples)} training example(s) '
+        f'(requested max_samples={max_samples})')
+    _log_bucket_distribution(samples, 'selected (post-truncation, this run\'s actual training set)', log=log)
+
     # Strip the instability fields back off -- every downstream consumer
     # (build_arrays, encode_sample, ...) expects plain (fen, score_cp, wdl).
     return [(fen, score, wdl) for fen, score, wdl, _sw, _bmc in samples]
+
+
+def _select_balanced_by_bucket(samples, max_samples, rng, has_signal, log=print):
+    """Phase 4 stratified sampling: allocate max_samples evenly across the 8
+    output buckets, redistributing any bucket's unused share to buckets that
+    still have supply left. Applies the same instability-priority ordering
+    within each bucket's own allocation when signal is available, so
+    balancing buckets doesn't throw away the existing quality-aware
+    truncation behavior."""
+    by_bucket = {b: [] for b in range(NNUE_OUT_BUCKETS)}
+    for s in samples:
+        b = _sample_bucket(s[0])
+        if b is None:
+            b = 0  # unparseable FEN (shouldn't happen -- validated upstream); don't drop silently
+        by_bucket[b].append(s)
+
+    def instability(s):
+        sw, bmc = s[3], s[4]
+        return (sw or 0) + (bmc or 0) * 30
+
+    even_share = max_samples // NNUE_OUT_BUCKETS
+    selected = []
+    remaining_pools = {}
+    for b in range(NNUE_OUT_BUCKETS):
+        pool = by_bucket[b]
+        take = min(len(pool), even_share)
+        if has_signal:
+            ranked = sorted(pool, key=instability, reverse=True)
+            chosen = ranked[:take]
+        else:
+            rng.shuffle(pool)
+            chosen = pool[:take]
+        chosen_ids = {id(s) for s in chosen}
+        remaining_pools[b] = [s for s in pool if id(s) not in chosen_ids]
+        selected.extend(chosen)
+
+    # Redistribute any shortfall (buckets with fewer than even_share available)
+    # across buckets that still have unselected supply, round-robin, until
+    # max_samples is reached or nothing is left anywhere.
+    shortfall = max_samples - len(selected)
+    if shortfall > 0:
+        donors = [b for b in range(NNUE_OUT_BUCKETS) if remaining_pools[b]]
+        while shortfall > 0 and donors:
+            still_has = []
+            for b in donors:
+                if not remaining_pools[b] or shortfall <= 0:
+                    continue
+                selected.append(remaining_pools[b].pop())
+                shortfall -= 1
+                if remaining_pools[b]:
+                    still_has.append(b)
+            donors = still_has
+
+    rng.shuffle(selected)
+    log(f'[train] --balance-buckets: allocated ~{even_share}/bucket evenly, '
+        f'redistributed shortfall from empty/small buckets to buckets with remaining supply')
+    return selected
 
 
 def encode_sample(fen, score_cp, wdl):
@@ -180,6 +325,20 @@ def build_arrays(samples):
 
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
+
+
+def lr_for_epoch(epoch_idx, total_epochs, lr, lr_final_fraction):
+    """Phase 5 (training-pipeline audit): linear LR decay from `lr` at
+    epoch_idx=0 down to `lr * lr_final_fraction` at epoch_idx=total_epochs-1
+    (clamped beyond). A standalone function (not a train_reference()
+    closure) specifically so it's unit-testable without spinning up a full
+    training run. lr_final_fraction=1.0 reproduces the old flat-LR behavior
+    exactly (every epoch returns `lr`)."""
+    if total_epochs <= 1:
+        return lr
+    progress = min(1.0, max(0.0, epoch_idx) / (total_epochs - 1))
+    lr_final = lr * lr_final_fraction
+    return lr + (lr_final - lr) * progress
 
 
 # ---------------------------------------------------------------------------
@@ -228,10 +387,10 @@ def train_reference(args):
     if not data_paths:
         raise SystemExit('no --data files and no --data-dir with .jsonl files given')
 
-    samples = load_jsonl_datasets(data_paths, args.max_samples, args.seed)
+    samples = load_jsonl_datasets(data_paths, args.max_samples, args.seed,
+                                   balance_buckets=args.balance_buckets)
     if not samples:
         raise SystemExit(f'no samples loaded from {data_paths}')
-    print(f'[train] loaded {len(samples)} samples from {len(data_paths)} file(s)')
 
     # Held-out validation split.
     n_val = max(1, int(len(samples) * args.val_fraction)) if len(samples) > 10 else 0
@@ -257,6 +416,21 @@ def train_reference(args):
     beta1, beta2, eps = 0.9, 0.999, 1e-8
     clip_hi = 32767.0 / args.qa_preview  # float-space preview of post-quant clipping range
 
+    # Phase 5 (training-pipeline audit): linear LR decay. Previously a flat
+    # args.lr for the entire run regardless of epoch count -- fine for the
+    # old default of 6 epochs, but --train-epochs is now raised to 20 (see
+    # auto_pipeline.py's history comment) specifically because a real
+    # ~200k-position batch benefits from more epochs than 6; a flat LR held
+    # for 20+ epochs risks late-training noise/instability instead of
+    # settling. total_epochs (not just this invocation's --epochs) drives
+    # the schedule so a run split across multiple --resume calls (as
+    # platform/trainer/train_network.py may end up doing) still decays
+    # smoothly across the FULL intended run, not resetting to peak LR on
+    # every resume. --lr-final-fraction=1.0 reproduces the old flat-LR
+    # behavior exactly, for anyone who wants it.
+    total_epochs = args.total_epochs or args.epochs
+    current_lr = [args.lr]  # mutable cell so adam_update sees per-epoch updates
+
     def adam_update(param, grad, key):
         nonlocal step
         m, v = state[key + '_m'], state[key + '_v']
@@ -264,7 +438,7 @@ def train_reference(args):
         v[:] = beta2 * v + (1 - beta2) * (grad * grad)
         mhat = m / (1 - beta1 ** step)
         vhat = v / (1 - beta2 ** step)
-        param -= (args.lr * mhat / (np.sqrt(vhat) + eps)).astype(param.dtype)
+        param -= (current_lr[0] * mhat / (np.sqrt(vhat) + eps)).astype(param.dtype)
 
     n = len(train_samples)
     order = np.arange(n)
@@ -285,6 +459,7 @@ def train_reference(args):
         return float(np.mean((pred - tgt) ** 2))
 
     for epoch in range(start_epoch, start_epoch + args.epochs):
+        current_lr[0] = lr_for_epoch(epoch, total_epochs, args.lr, args.lr_final_fraction)
         rng.shuffle(order)
         epoch_loss = 0.0
         for start in range(0, n, args.batch_size):
@@ -343,12 +518,13 @@ def train_reference(args):
         train_mse = epoch_loss / n
         val_mse = eval_loss(v_own, v_opp, v_bk, v_tgt) if val_samples else float('nan')
         elapsed = time.time() - t0
-        print(f'[train] epoch {epoch + 1}  train_mse={train_mse:.5f}  '
-              f'val_mse={val_mse:.5f}  elapsed={elapsed:.1f}s')
+        print(f'[train] epoch {epoch + 1}/{total_epochs}  lr={current_lr[0]:.5f}  '
+              f'train_mse={train_mse:.5f}  val_mse={val_mse:.5f}  elapsed={elapsed:.1f}s')
 
         with open(metrics_path, 'a') as mf:
             mf.write(json.dumps({
-                'epoch': epoch + 1, 'step': step, 'train_mse': train_mse, 'val_mse': val_mse,
+                'epoch': epoch + 1, 'step': step, 'lr': current_lr[0],
+                'train_mse': train_mse, 'val_mse': val_mse,
                 'n_train': n, 'n_val': len(val_samples), 'elapsed_s': elapsed,
                 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             }) + '\n')
@@ -464,8 +640,32 @@ def main():
                      help='deprecated alias for --gpu-backend cuda')
     ap.add_argument('--epochs', type=int, default=3)
     ap.add_argument('--max-samples', type=int, default=200_000)
+    ap.add_argument('--balance-buckets', action='store_true',
+                     help='(Phase 4, training-pipeline audit) when truncating to --max-samples, '
+                          'allocate the budget evenly across the 8 output buckets (by piece '
+                          'count) instead of a blind/instability-weighted sample of the whole '
+                          'pool -- prevents a naturally rare bucket (e.g. deep endgames) from '
+                          'being starved just because it is a small share of the overall pool. '
+                          'Off by default: the un-balanced behavior is unchanged unless you '
+                          'opt in, and this only matters once --min-new-positions/'
+                          '--max-dataset-positions are large enough that truncation actually '
+                          'happens (see auto_pipeline.py).')
     ap.add_argument('--batch-size', type=int, default=256)
     ap.add_argument('--lr', type=float, default=0.01)
+    ap.add_argument('--total-epochs', type=int, default=None,
+                     help='(Phase 5, training-pipeline audit) total planned epochs for the LR '
+                          'decay schedule below, if this run is spread across multiple '
+                          '--resume invocations (each with a smaller --epochs) -- so the '
+                          'schedule decays smoothly across the FULL intended run instead of '
+                          'resetting to peak LR on every resume. Defaults to --epochs (a '
+                          'single, non-resumed run).')
+    ap.add_argument('--lr-final-fraction', type=float, default=0.1,
+                     help='(Phase 5) LR decays linearly from --lr down to --lr * this fraction '
+                          'by the final epoch of --total-epochs. A flat args.lr for the whole '
+                          'run (the old behavior) was fine at the old default of 6 epochs, but '
+                          'risks late-training noise once --train-epochs is raised for a real '
+                          '~200k-position batch (see auto_pipeline.py). 1.0 disables decay and '
+                          'reproduces the old flat-LR behavior exactly.')
     ap.add_argument('--val-fraction', type=float, default=0.05)
     ap.add_argument('--qa-preview', type=int, default=256,
                      help='preview quantization scale used only to size the training-time '

@@ -655,11 +655,13 @@ def export_dataset(req: ExportDatasetRequest, _=Depends(require_admin)):
             watermark = max(watermark, int(meta.get('max_position_id', 0)))
 
     rows, max_id = db.export_positions_range(watermark, req.max_positions)
+    total_in_corpus = db.count_all_positions()
     if len(rows) < req.min_new_positions:
         return ExportDatasetResponse(created=False,
                                       reason=f'only {len(rows)} new position(s), '
                                              f'need {req.min_new_positions}',
-                                      count=len(rows), max_position_id=watermark)
+                                      count=len(rows), max_position_id=watermark,
+                                      total_positions_in_corpus=total_in_corpus)
 
     out_dir = os.path.join(settings.artifacts_dir, 'auto_datasets')
     os.makedirs(out_dir, exist_ok=True)
@@ -694,7 +696,8 @@ def export_dataset(req: ExportDatasetRequest, _=Depends(require_admin)):
                   'count': len(rows), 'min_position_id_exclusive': watermark})
 
     return ExportDatasetResponse(created=True, artifact_id=artifact_id,
-                                  count=len(rows), max_position_id=max_id)
+                                  count=len(rows), max_position_id=max_id,
+                                  total_positions_in_corpus=total_in_corpus)
 
 
 @app.post('/admin/pipeline/prune-positions', response_model=PrunePositionsResponse)

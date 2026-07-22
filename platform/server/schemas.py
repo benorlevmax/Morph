@@ -198,8 +198,17 @@ class ExportDatasetRequest(BaseModel):
     """Admin-only (called by platform/server/auto_pipeline.py, the automated
     improvement-loop controller): export accepted positions newer than the
     last auto-exported dataset into a new JSONL 'dataset' artifact, in
-    tools/nnue_pipeline's format, ready for a TRAIN_NETWORK task."""
-    min_new_positions: int = Field(ge=1, default=2000)
+    tools/nnue_pipeline's format, ready for a TRAIN_NETWORK task.
+
+    min_new_positions default matches max_positions (both 200_000), not an
+    independently-small number: this endpoint exports+trains on whatever's
+    available the MOMENT min_new_positions is crossed, it does not wait
+    further toward max_positions. A caller that leaves this at its schema
+    default should still get a real, full-sized batch, not a tiny one --
+    see auto_pipeline.py's --min-new-positions history comment for the
+    production incident (~48,907-position exports instead of ~200,000) this
+    default previously caused."""
+    min_new_positions: int = Field(ge=1, default=200_000)
     max_positions: int = Field(ge=1, default=200_000)
 
 
@@ -209,6 +218,13 @@ class ExportDatasetResponse(BaseModel):
     artifact_id: Optional[str] = None
     count: int = 0
     max_position_id: int = 0
+    # Total rows currently in the `positions` table (db.count_all_positions()),
+    # NOT the same as `count` (new positions in THIS export) -- surfaced so a
+    # caller/log can tell "corpus size" apart from "how much of it is new
+    # since last time", which conflating previously masked a training run
+    # using only ~48,907 of a 12.8M-position corpus. See
+    # NNUE_TRAINING_PIPELINE_AUDIT.md.
+    total_positions_in_corpus: int = 0
 
 
 class PrunePositionsRequest(BaseModel):

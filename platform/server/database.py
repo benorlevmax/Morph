@@ -548,6 +548,29 @@ class PlatformDatabase(DistDatabase):
         finally:
             conn.close()
 
+    def count_all_positions(self):
+        """The TRUE current size of the exportable corpus: `SELECT COUNT(*)
+        FROM positions` right now. Deliberately NOT the same number as
+        dashboard_data.py's 'positions_generated' (that's workers.positions_generated,
+        a lifetime-submitted running counter that never decreases even if
+        --prune-after-export deletes old raw rows later, and can include
+        this worker's own count before this table's dedup/validation was
+        applied at insert time -- see submit_positions()). This one is
+        "how many rows could export_positions_range() actually return right
+        now", used by /admin/pipeline/export-dataset (app.py) to report the
+        real corpus size a training cycle is drawing from, alongside how
+        many of them are new since the last export -- added after a real
+        incident where those two numbers were conflated and a 12.8M-position
+        corpus was assumed to be what a training run actually used, when
+        the run had in fact only seen the ~48,907 positions newer than its
+        watermark (see NNUE_TRAINING_PIPELINE_AUDIT.md)."""
+        conn = self._conn()
+        try:
+            row = conn.execute('SELECT COUNT(*) c FROM positions').fetchone()
+            return int(row['c'])
+        finally:
+            conn.close()
+
     def export_positions_range(self, min_id_exclusive, limit):
         """Returns (rows, max_id_included) for positions with id >
         min_id_exclusive, oldest-first, capped at `limit`. Each row has the

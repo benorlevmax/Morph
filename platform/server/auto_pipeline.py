@@ -160,12 +160,20 @@ def maybe_queue_training(client, args):
         'min_new_positions': args.min_new_positions,
         'max_positions': args.max_dataset_positions,
     })
+    # Phase 3 verification logging (NNUE_TRAINING_PIPELINE_AUDIT.md): total
+    # corpus size vs. what THIS cycle actually selected must always be
+    # visible together -- conflating them (or only ever logging the
+    # cumulative corpus size, which only grows) is exactly what let a
+    # training run silently use ~48,907 of a 12.8M-position corpus without
+    # anyone noticing until a 100-0 Elo match result forced an audit.
+    log(f"dataset export: total corpus available: {resp.get('total_positions_in_corpus', 'unknown')}")
     if not resp['created']:
         log(f"dataset export: not enough new data yet ({resp.get('reason')})")
         return None
 
-    log(f"dataset export: new dataset artifact {resp['artifact_id']} "
-        f"({resp['count']} positions, watermark now position id {resp['max_position_id']})")
+    log(f"dataset export: new dataset artifact {resp['artifact_id']} -- "
+        f"selected {resp['count']} position(s) for this training batch "
+        f"(watermark now position id {resp['max_position_id']})")
 
     # Don't pile up redundant TRAIN_NETWORK tasks -- only queue a fresh batch
     # if none is currently pending/assigned. Once none are in flight, queue
@@ -410,10 +418,42 @@ def parse_args():
                           'position-blind (no search backing them), so too high a value '
                           'trades away realistic play quality for diversity.')
 
-    ap.add_argument('--min-new-positions', type=int, default=2000,
-                     help='minimum newly-accepted positions before exporting a training dataset')
+    # HISTORY / WHY THIS CHANGED: this used to default to 2000, four orders
+    # of magnitude below --max-dataset-positions (200,000). export_dataset()
+    # (app.py) exports and trains on whatever's newly available past the
+    # watermark the MOMENT that threshold is crossed -- it does not wait to
+    # accumulate toward max_positions, so with min_new_positions=2000 the
+    # auto-loop was firing a fresh TRAIN_NETWORK cycle on whatever small
+    # slice (often under 50,000 positions -- confirmed via a live production
+    # export, see NNUE_TRAINING_PIPELINE_AUDIT.md) had trickled in since the
+    # last cycle, instead of ever letting a real ~200k-position batch build
+    # up. Root cause of a network trained on ~1,150 total gradient updates
+    # that then lost 100/100 games against the classical evaluator. Default
+    # is now the SAME as --max-dataset-positions, so a cycle only fires once
+    # a genuinely large, intended-size batch is actually available -- this
+    # directly implements "accumulate, then export" instead of "export
+    # whatever trickled in". Set below --max-dataset-positions only if you
+    # deliberately want smaller, more frequent training cycles (e.g. during
+    # early bootstrapping when the corpus is still tiny and getting SOME
+    # network trained matters more than getting a well-sized one); the old
+    # default of 2000 should never be reintroduced as-is in a deployment
+    # that also expects --max-dataset-positions=200_000-sized training runs.
+    ap.add_argument('--min-new-positions', type=int, default=200_000,
+                     help='minimum newly-accepted positions before exporting a training dataset '
+                          'and queueing TRAIN_NETWORK -- defaults to the SAME value as '
+                          '--max-dataset-positions so a cycle only fires once a full-sized batch '
+                          'has actually accumulated, not on every small trickle of new data')
     ap.add_argument('--max-dataset-positions', type=int, default=200_000)
-    ap.add_argument('--train-epochs', type=int, default=6)
+    ap.add_argument('--train-epochs', type=int, default=20,
+                     help='was 6; raised because 6 epochs was tuned (undeliberately) against '
+                          'the old, much-smaller ~2000-49000-position exports this loop used to '
+                          'produce -- see --min-new-positions history above. With real '
+                          '~200k-position batches, 6 epochs under-uses the larger dataset (a '
+                          'controlled experiment in NNUE_TRAINING_PIPELINE_AUDIT.md showed loss '
+                          'still improving well past epoch 6 on a smaller, easier synthetic '
+                          'task). Not a substitute for watching val_mse on a real run -- see '
+                          'train.py\'s --lr-decay for the schedule that makes a longer run like '
+                          'this safe instead of just noisier.')
     ap.add_argument('--experiment-candidates', type=int, default=1,
                      help='how many TRAIN_NETWORK candidates to queue per training cycle '
                           'against the same exported dataset, each with a distinct --seed '
