@@ -205,7 +205,8 @@ def maybe_queue_training(client, args):
     for i in range(n_candidates):
         payload = {'dataset_artifact_id': resp['artifact_id'], 'epochs': args.train_epochs,
                    'max_samples': args.max_dataset_positions,
-                   'seed': args.train_seed_base + i}
+                   'seed': args.train_seed_base + i,
+                   'balance_buckets': args.balance_buckets}
         if experiment_id:
             payload['experiment_id'] = experiment_id
         task = client.post('/admin/tasks/typed', {'task_type': 'TRAIN_NETWORK', 'payload': payload})
@@ -465,6 +466,14 @@ def parse_args():
     ap.add_argument('--train-seed-base', type=int, default=1,
                      help='first --seed value used when queueing a training cycle; candidate '
                           'i in the batch gets seed = train-seed-base + i')
+    ap.add_argument('--balance-buckets', action='store_true',
+                     help='forwarded into every queued TRAIN_NETWORK task payload -- opts into '
+                          'train.py\'s --balance-buckets (Phase 4, NNUE_TRAINING_PIPELINE_AUDIT.md '
+                          '-- stratified sampling across the 8 output buckets on truncation, '
+                          'addresses the real bucket-0-at-4.86%% starvation found in a live '
+                          'export). Off by default, matching train.py\'s own default -- this loop '
+                          'ran fine without it before and the option should be opted into '
+                          'deliberately, not silently flipped on for every existing deployment.')
 
     ap.add_argument('--elo-games', type=int, default=24,
                      help='games queued per ELO_MATCH batch; more batches are queued '

@@ -256,7 +256,7 @@ def _local_verify(engine_bin, net_path, log):
         f'(features={len(net.ft_weights)}, hl={len(net.ft_bias)}, buckets={len(net.out_bias)})')
 
 
-def _train_gpu(dataset_path, workdir, epochs, backend, log):
+def _train_gpu(dataset_path, workdir, epochs, backend, log, balance_buckets=False):
     """Attempts the real GPU path (tools/nnue_pipeline/train.py --engine
     bullet --gpu-backend <backend> -> tools/nnue_training/bullet_trainer,
     built with the matching cargo feature). `backend` is 'cuda' or 'rocm'
@@ -264,15 +264,24 @@ def _train_gpu(dataset_path, workdir, epochs, backend, log):
     picked as the best real GPU on this machine -- never hardcoded).
     Returns the exported .nnue path on success. Raises TrainNetworkError on
     any failure -- the caller is expected to catch this and fall back to
-    CPU, not propagate it as a task failure."""
+    CPU, not propagate it as a task failure.
+
+    balance_buckets: same flag/reasoning as _train_cpu's -- train.py's
+    dataset loading (and therefore --balance-buckets) runs the same way
+    regardless of which engine consumes its output, so this needs
+    forwarding here too, not just on the CPU path."""
     ckpt_dir = os.path.join(workdir, 'bullet_checkpoints')
     net_path = os.path.join(workdir, 'candidate_gpu.nnue')
 
-    _run_pipeline_script('train.py', [
+    train_args = [
         '--engine', 'bullet', '--gpu-backend', backend,
         '--data', dataset_path, '--out', ckpt_dir,
         '--epochs', str(epochs),
-    ], log, timeout=max(1800, epochs * 300))
+    ]
+    if balance_buckets:
+        train_args.append('--balance-buckets')
+
+    _run_pipeline_script('train.py', train_args, log, timeout=max(1800, epochs * 300))
 
     net_id = os.path.basename(ckpt_dir.rstrip('/\\')) or 'candidate'
     quantised_path = os.path.join(ckpt_dir, net_id, 'quantised.bin')
@@ -295,7 +304,8 @@ def _train_gpu(dataset_path, workdir, epochs, backend, log):
     }
 
 
-def _train_cpu(dataset_path, workdir, epochs, max_samples, qa, qb, log, seed=1):
+def _train_cpu(dataset_path, workdir, epochs, max_samples, qa, qb, log, seed=1,
+                balance_buckets=False):
     """The proven CPU reference path (Phase 1). Returns the exported .nnue
     path and metadata dict. `seed` drives both train.py's weight
     initialization (new_params(seed)) and its dataset shuffle/truncation
@@ -303,15 +313,27 @@ def _train_cpu(dataset_path, workdir, epochs, max_samples, qa, qb, log, seed=1):
     concurrently-queued TRAIN_NETWORK tasks against the same dataset (see
     auto_pipeline.py's maybe_queue_training) produces genuinely different
     candidate networks to compare, not just repeated runs of the same
-    training with a different name."""
+    training with a different name.
+
+    balance_buckets: forwarded to train.py's --balance-buckets (Phase 4,
+    NNUE_TRAINING_PIPELINE_AUDIT.md). Off by default here too -- this
+    executor used to silently drop the flag entirely (train.py supported it,
+    nothing ever passed it), which meant the bucket-balancing fix built and
+    tested in tools/nnue_pipeline/test_train_dataset_loading.py never
+    actually ran against a real TRAIN_NETWORK task. Opt-in via the task
+    payload's balance_buckets field / auto_pipeline.py's --balance-buckets."""
     ckpt_dir = os.path.join(workdir, 'checkpoints')
     net_path = os.path.join(workdir, 'candidate.nnue')
 
-    _run_pipeline_script('train.py', [
+    train_args = [
         '--data', dataset_path, '--out', ckpt_dir,
         '--epochs', str(epochs), '--max-samples', str(max_samples),
         '--seed', str(seed),
-    ], log, timeout=max(900, epochs * 180))
+    ]
+    if balance_buckets:
+        train_args.append('--balance-buckets')
+
+    _run_pipeline_script('train.py', train_args, log, timeout=max(900, epochs * 180))
 
     ckpt_path = os.path.join(ckpt_dir, 'latest.npz')
     if not os.path.isfile(ckpt_path):
@@ -364,9 +386,16 @@ def run_train_network(task, client, engine_bin, args, log=print):
     # behavior is unchanged.
     seed = int(payload.get('seed', 1))
     experiment_id = payload.get('experiment_id')
+    # balance_buckets: opt-in stratified sampling across the 8 NNUE output
+    # buckets (Phase 4, NNUE_TRAINING_PIPELINE_AUDIT.md). Off by default --
+    # matches train.py's own --balance-buckets default -- so ordinary
+    # single-candidate auto-pipeline behavior is unchanged unless a caller
+    # (auto_pipeline.py's --balance-buckets, or a manually-queued task)
+    # explicitly opts in.
+    balance_buckets = bool(payload.get('balance_buckets', False))
 
     log(f"[train_network] task {task['task_id']}: dataset={dataset_id} "
-        f"epochs={epochs} qa={qa} qb={qb} seed={seed}"
+        f"epochs={epochs} qa={qa} qb={qb} seed={seed} balance_buckets={balance_buckets}"
         + (f" experiment={experiment_id}" if experiment_id else ""))
 
     try:
@@ -382,7 +411,8 @@ def run_train_network(task, client, engine_bin, args, log=print):
         gpu_backend = _gpu_training_available(log)
         if gpu_backend is not None:
             try:
-                net_path, engine_meta = _train_gpu(dataset_path, workdir, epochs, gpu_backend, log)
+                net_path, engine_meta = _train_gpu(dataset_path, workdir, epochs, gpu_backend, log,
+                                                    balance_buckets=balance_buckets)
             except TrainNetworkError as e:
                 log(f'[train_network] GPU training path failed ({e}) -- falling back to CPU '
                     f'reference trainer for this task instead of failing it outright')
@@ -390,12 +420,14 @@ def run_train_network(task, client, engine_bin, args, log=print):
 
         if net_path is None:
             net_path, engine_meta = _train_cpu(dataset_path, workdir, epochs, max_samples,
-                                                qa, qb, log, seed=seed)
+                                                qa, qb, log, seed=seed,
+                                                balance_buckets=balance_buckets)
 
         _local_verify(engine_bin, net_path, log)
 
         metadata = {
             'epochs': epochs, 'qa': qa, 'qb': qb, 'seed': seed,
+            'balance_buckets': balance_buckets,
             'source_dataset_artifact_id': dataset_id,
         }
         if experiment_id:
